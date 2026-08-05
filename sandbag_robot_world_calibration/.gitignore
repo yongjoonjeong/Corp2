@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+calibration/intrinsic_images/
+calibration/external_samples/*/*/
+calibration/validation/

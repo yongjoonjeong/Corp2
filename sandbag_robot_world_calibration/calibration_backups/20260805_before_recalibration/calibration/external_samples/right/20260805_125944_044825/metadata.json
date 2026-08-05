@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "sample_id": "20260805_125944_044825",
+  "camera_name": "right",
+  "captured_at": "2026-08-05T03:59:44.098734+00:00",
+  "image_path": "image.png",
+  "camera_frame_timestamp_ns": 63215753110255,
+  "intrinsic_path": "calibration/intrinsics/right.yaml",
+  "board_pose_preview": {
+    "T_camera_board_mm": [
+      [
+        0.7587111180897801,
+        0.6244347377966347,
+        0.1855766621097697,
+        -262.5539632218936
+      ],
+      [
+        -0.6504715004925341,
+        0.7107803887544573,
+        0.26772759665199586,
+        -7.64421570414954
+      ],
+      [
+        0.035274159578175514,
+        -0.3238402340582634,
+        0.945453984322422,
+        698.6968275215592
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "reprojection_error_px": 0.31983284135787327,
+    "corner_count": 63
+  },
+  "robot_pose": {
+    "reference_frame": "robot_base",
+    "moving_frame": "robot_flange",
+    "units": {
+      "translation": "mm",
+      "angles": "deg"
+    },
+    "T_base_flange_mm": [
+      [
+        -0.19131602326783548,
+        -0.4947529420011154,
+        0.8477132213326756,
+        118.88378143310547
+      ],
+      [
+        -0.5749625345388432,
+        -0.6434838240517504,
+        -0.5053183670325128,
+        -732.168212890625
+      ],
+      [
+        0.7954974940989132,
+        -0.5840788427643794,
+        -0.16135563924875004,
+        236.7948455810547
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "flange_posx_mm_deg": [
+      118.88378143310547,
+      -732.168212890625,
+      236.7948455810547,
+      149.2010040283203,
+      -99.28559112548828,
+      36.28726577758789
+    ],
+    "rotation_source": "get_current_tool_flange_posx",
+    "orientation_convention": "intrinsic_Z-Y'-Z''_degrees",
+    "requested_monotonic_ns": 63215746811653,
+    "received_monotonic_ns": 63215748285987,
+    "stability": {
+      "translation_spread_mm": 0.0008930303254598347,
+      "rotation_spread_deg": 0.00011857189187859054
+    }
+  }
+}

@@ -1,0 +1,7 @@
+dictionary: DICT_4X4_50
+squares_x: 11
+squares_y: 8
+square_length_mm: 34.0
+marker_length_mm: 20.0
+minimum_charuco_corners: 20
+legacy_pattern: true

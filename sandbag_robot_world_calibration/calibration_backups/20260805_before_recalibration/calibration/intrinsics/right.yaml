@@ -1,0 +1,141 @@
+schema_version: 1
+camera_name: right
+image_width: 640
+image_height: 480
+camera_matrix:
+- - 676.6181507271328
+  - 0.0
+  - 339.104707086207
+- - 0.0
+  - 679.743867589957
+  - 264.23048193299513
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- -0.06047001708149016
+- 1.2299372935064192
+- 0.010414994301149758
+- 0.00640081077369987
+- -4.223428305636066
+rms_reprojection_error_px: 0.2520714114543134
+mean_reprojection_error_px: 0.23457970597914288
+board:
+  dictionary: DICT_4X4_50
+  squares_x: 11
+  squares_y: 8
+  square_length_mm: 34.0
+  marker_length_mm: 20.0
+  minimum_charuco_corners: 20
+  legacy_pattern: true
+created_at: '2026-08-05T03:40:46.093591+00:00'
+valid_view_count: 35
+source_images:
+- calibration/intrinsic_images/right/0001_61930232669413.png
+- calibration/intrinsic_images/right/0002_61933732904700.png
+- calibration/intrinsic_images/right/0003_61942496970659.png
+- calibration/intrinsic_images/right/0004_61944497309141.png
+- calibration/intrinsic_images/right/0005_61950097347955.png
+- calibration/intrinsic_images/right/0006_61952798242112.png
+- calibration/intrinsic_images/right/0007_61958965886972.png
+- calibration/intrinsic_images/right/0008_61967665796831.png
+- calibration/intrinsic_images/right/0009_61970065932758.png
+- calibration/intrinsic_images/right/0010_61971301828711.png
+- calibration/intrinsic_images/right/0011_61973366897453.png
+- calibration/intrinsic_images/right/0012_61976166870641.png
+- calibration/intrinsic_images/right/0013_61979866302201.png
+- calibration/intrinsic_images/right/0014_61982466373484.png
+- calibration/intrinsic_images/right/0015_61991202433153.png
+- calibration/intrinsic_images/right/0016_61992167244418.png
+- calibration/intrinsic_images/right/0017_61996567365467.png
+- calibration/intrinsic_images/right/0018_62004367668265.png
+- calibration/intrinsic_images/right/0019_62017703050032.png
+- calibration/intrinsic_images/right/0020_62020768271424.png
+- calibration/intrinsic_images/right/0021_62024867601174.png
+- calibration/intrinsic_images/right/0022_62030568500981.png
+- calibration/intrinsic_images/right/0023_62031667599582.png
+- calibration/intrinsic_images/right/0024_62033003716017.png
+- calibration/intrinsic_images/right/0025_62034703688577.png
+- calibration/intrinsic_images/right/0026_62036068029466.png
+- calibration/intrinsic_images/right/0027_62043036218402.png
+- calibration/intrinsic_images/right/0028_62049536185913.png
+- calibration/intrinsic_images/right/0029_62053736462675.png
+- calibration/intrinsic_images/right/0030_62058936554483.png
+- calibration/intrinsic_images/right/0031_62063736517249.png
+- calibration/intrinsic_images/right/0032_62068736706742.png
+- calibration/intrinsic_images/right/0033_62072937808547.png
+- calibration/intrinsic_images/right/0034_62074236968255.png
+- calibration/intrinsic_images/right/0035_62075436846241.png
+per_view_reprojection_error_px:
+- 0.16334788501262665
+- 0.1365821212530136
+- 0.18280808627605438
+- 0.14377646148204803
+- 0.12354743480682373
+- 0.136600524187088
+- 0.24890050292015076
+- 0.17402340471744537
+- 0.17380525171756744
+- 0.13892947137355804
+- 0.18295446038246155
+- 0.24965326488018036
+- 0.1452174335718155
+- 0.1768312305212021
+- 0.08066203445196152
+- 0.15191340446472168
+- 0.1742219775915146
+- 0.3038131296634674
+- 0.26688045263290405
+- 0.26796674728393555
+- 0.183243989944458
+- 0.29798951745033264
+- 0.2745046615600586
+- 0.28438788652420044
+- 0.32551857829093933
+- 0.2089318484067917
+- 0.3722269833087921
+- 0.3925151526927948
+- 0.41305145621299744
+- 0.3229997456073761
+- 0.28041738271713257
+- 0.2699342966079712
+- 0.34618625044822693
+- 0.3199383020401001
+- 0.2960083782672882
+charuco_corner_counts:
+- 64
+- 51
+- 57
+- 50
+- 29
+- 33
+- 35
+- 37
+- 28
+- 44
+- 40
+- 39
+- 29
+- 50
+- 20
+- 36
+- 21
+- 32
+- 52
+- 49
+- 24
+- 33
+- 48
+- 45
+- 42
+- 49
+- 47
+- 39
+- 57
+- 33
+- 37
+- 23
+- 25
+- 36
+- 36
+opencv_version: 5.0.0

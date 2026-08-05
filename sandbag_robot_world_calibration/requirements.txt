@@ -1,0 +1,8 @@
+numpy>=1.23
+scipy>=1.9
+PyYAML>=6.0
+opencv-contrib-python>=4.8
+mediapipe==0.10.21
+Pillow>=10
+# RealSense를 사용할 때만 필요합니다.
+pyrealsense2>=2.54
