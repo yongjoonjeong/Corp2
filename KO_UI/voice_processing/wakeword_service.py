@@ -16,17 +16,17 @@ EventCallback = Callable[[str, dict[str, Any]], None]
 
 
 class WakeWordService:
-    """Local openWakeWord listener with a continuous Whisper voice session.
+    """Wake-word listener that accepts exactly one command per activation.
 
-    One wake word opens a voice session. While the session is active, follow-up
-    commands are detected by simple voice activity detection and transcribed
-    without requiring the wake word again.
+    The first activation uses the local full wake-word model. Every later
+    activation uses the shorter "케이오" phrase, verified through STT.
     """
 
     def __init__(self, model_path: Path, on_event: EventCallback):
         self.model_path = Path(model_path)
         self.on_event = on_event
         self.display_name = os.environ.get("WAKEWORD_DISPLAY_NAME", "웨이크 업 케이오").strip() or "웨이크 업 케이오"
+        self.followup_display_name = os.environ.get("FOLLOWUP_WAKEWORD_DISPLAY_NAME", "케이오").strip() or "케이오"
         self.threshold = float(os.environ.get("WAKEWORD_THRESHOLD", "0.65"))
         self.sample_rate = int(os.environ.get("WAKEWORD_SAMPLE_RATE", "48000"))
         self.frame_ms = int(os.environ.get("WAKEWORD_FRAME_MS", "80"))
@@ -46,6 +46,9 @@ class WakeWordService:
         self.session_max_sec = max(self.session_timeout_sec, float(os.environ.get("VOICE_SESSION_MAX_SEC", "3600")))
         self.session_followup_delay_sec = max(0.2, float(os.environ.get("VOICE_SESSION_FOLLOWUP_DELAY_SEC", "0.8")))
         self.session_voice_hits = max(1, int(os.environ.get("VOICE_SESSION_VOICE_HITS", "2")))
+        self.followup_wake_max_sec = max(1.0, float(os.environ.get("FOLLOWUP_WAKEWORD_MAX_SEC", "2.5")))
+        self.followup_wake_min_sec = max(0.2, float(os.environ.get("FOLLOWUP_WAKEWORD_MIN_SEC", "0.35")))
+        self.followup_wake_silence_sec = max(0.3, float(os.environ.get("FOLLOWUP_WAKEWORD_SILENCE_SEC", "0.65")))
 
         self._enabled = os.environ.get("WAKEWORD_ENABLED", "1") != "0"
         self._stop_event = threading.Event()
@@ -55,6 +58,7 @@ class WakeWordService:
         self._session_active = False
         self._session_deadline = 0.0
         self._session_source = ""
+        self._initial_wake_completed = False
         self._status: dict[str, Any] = {
             "available": False,
             "running": False,
@@ -68,6 +72,9 @@ class WakeWordService:
             "model": self.model_path.name,
             "device_index": self.device_index,
             "display_name": self.display_name,
+            "initial_display_name": self.display_name,
+            "followup_display_name": self.followup_display_name,
+            "initial_wake_completed": False,
             "last_error": None,
             "session_active": False,
             "session_timeout_sec": self.session_timeout_sec,
@@ -101,6 +108,29 @@ class WakeWordService:
         )
         return any(phrase in normalized for phrase in phrases)
 
+    @classmethod
+    def _is_followup_wake(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        return normalized in {
+            "케이오",
+            "케이오야",
+            "케이요",
+            "ko",
+            "kayo",
+            "kaio",
+        }
+
+    def _current_display_name(self) -> str:
+        return self.followup_display_name if self._initial_wake_completed else self.display_name
+
+    def _mark_initial_wake_completed(self) -> None:
+        with self._lock:
+            self._initial_wake_completed = True
+            self._status.update(
+                initial_wake_completed=True,
+                display_name=self.followup_display_name,
+            )
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -119,10 +149,11 @@ class WakeWordService:
             self.end_session("muted")
         with self._lock:
             self._enabled = enabled
+            waiting_name = self._current_display_name()
             self._status.update(
                 enabled=self._enabled,
                 state="waiting_wakeword" if self._enabled else "muted",
-                message=f"‘{self.display_name}’ 호출어 대기 중" if self._enabled else "음성 대기 꺼짐",
+                message=f"‘{waiting_name}’ 호출어 대기 중" if self._enabled else "음성 대기 꺼짐",
             )
         self.on_event("status", self.status())
 
@@ -141,7 +172,7 @@ class WakeWordService:
                 session_active=True,
                 session_timeout_sec=duration,
                 state="session_waiting",
-                message="음성 대화 중 · 호출어 없이 말씀하세요",
+                message="명령 대기 중 · 명령을 하나 말씀하세요",
             )
         payload = self.status()
         payload["source"] = source
@@ -161,7 +192,7 @@ class WakeWordService:
                 session_active=True,
                 session_timeout_sec=duration,
                 state="session_waiting",
-                message="음성 대화 중 · 호출어 없이 말씀하세요",
+                message="명령 대기 중 · 명령을 하나 말씀하세요",
             )
         payload = self.status()
         payload["source"] = source
@@ -180,11 +211,12 @@ class WakeWordService:
             self._session_active = False
             self._session_deadline = 0.0
             self._session_source = ""
+            waiting_name = self._current_display_name()
             self._status.update(
                 session_active=False,
                 session_remaining_sec=0,
                 state="waiting_wakeword" if self._enabled else "muted",
-                message=f"‘{self.display_name}’ 호출어 대기 중" if self._enabled else "음성 대기 꺼짐",
+                message=f"‘{waiting_name}’ 호출어 대기 중" if self._enabled else "음성 대기 꺼짐",
             )
         payload = self.status()
         payload["reason"] = reason
@@ -302,7 +334,44 @@ class WakeWordService:
                     if self._is_exit_command(text):
                         self.end_session("voice_command")
                         continue
-                    self.extend_session(self.session_timeout_sec, source="voice_command")
+                    self.end_session("command_completed")
+                    with self._lock:
+                        self._suppressed_until = max(
+                            self._suppressed_until,
+                            time.monotonic() + self.session_followup_delay_sec,
+                        )
+                    continue
+
+                if self._initial_wake_completed:
+                    with self._lock:
+                        followup_enabled = self._enabled
+                    if not followup_enabled:
+                        # Keep consuming the stream without sending muted audio
+                        # to the transcription service.
+                        stream.read(self.frame_size, exception_on_overflow=False)
+                        continue
+                    wake_wav, noise_rms = self._wait_for_followup_wake(
+                        stream, np, noise_rms
+                    )
+                    if wake_wav is None:
+                        continue
+                    transcript = self._transcribe_followup_wake(wake_wav)
+                    if transcript is None:
+                        continue
+
+                    self.start_session(self.session_timeout_sec, source="followup_wakeword")
+                    self._set_status(
+                        state="wake_detected",
+                        message="‘케이오’ 감지 · 명령을 듣는 중",
+                        last_transcript=transcript,
+                    )
+                    self._emit(
+                        "wake_detected",
+                        confidence=None,
+                        session_active=True,
+                        wakeword=self.followup_display_name,
+                        source="followup_wakeword",
+                    )
                     with self._lock:
                         self._suppressed_until = max(
                             self._suppressed_until,
@@ -335,6 +404,7 @@ class WakeWordService:
 
                 confidence_window.clear()
                 last_trigger = now
+                self._mark_initial_wake_completed()
                 self.start_session(self.session_timeout_sec, source="wakeword")
                 self._set_status(state="wake_detected", message="호출어 감지 · 명령을 듣는 중")
                 self._emit("wake_detected", confidence=confidence, session_active=True)
@@ -350,7 +420,7 @@ class WakeWordService:
                 if self._is_exit_command(text):
                     self.end_session("voice_command")
                     continue
-                self.extend_session(self.session_timeout_sec, source="voice_command")
+                self.end_session("command_completed")
                 with self._lock:
                     self._suppressed_until = max(
                         self._suppressed_until,
@@ -377,6 +447,36 @@ class WakeWordService:
                     pass
             self._set_status(running=False)
 
+    def _transcribe_followup_wake(self, wake_wav: bytes) -> str | None:
+        self._set_status(state="transcribing", message="‘케이오’ 호출을 확인하는 중")
+        self._emit("transcribing", session_active=False, wakeword_check=True)
+        try:
+            result = transcribe_audio_bytes(
+                wake_wav,
+                "ko-followup-wakeword.wav",
+                "audio/wav",
+            )
+        except TranscriptionError as exc:
+            self._set_status(
+                state="waiting_wakeword",
+                message=f"‘{self.followup_display_name}’ 호출어 대기 중",
+                last_error=str(exc),
+            )
+            self._emit("status", **self.status())
+            return None
+
+        text = str(result.get("text", "")).strip()
+        if not self._is_followup_wake(text):
+            self._set_status(
+                state="waiting_wakeword",
+                message=f"‘{self.followup_display_name}’ 호출어 대기 중",
+                last_transcript=text,
+                last_error=None,
+            )
+            self._emit("status", **self.status())
+            return None
+        return text
+
     def _transcribe_command(self, command_wav: bytes, *, confidence: float | None, session_active: bool) -> str | None:
         self._set_status(state="transcribing", message="음성 명령을 확인하는 중")
         self._emit("transcribing", session_active=session_active)
@@ -386,7 +486,7 @@ class WakeWordService:
             message = str(exc)
             self._set_status(
                 state="session_waiting" if session_active else "waiting_wakeword",
-                message="음성 대화 중 · 다시 말씀해 주세요" if session_active else f"‘{self.display_name}’ 호출어 대기 중",
+                message="명령을 다시 말씀해 주세요" if session_active else f"‘{self.display_name}’ 호출어 대기 중",
                 last_error=message,
             )
             self._emit("command_error", message=message, session_active=session_active)
@@ -396,13 +496,13 @@ class WakeWordService:
         if not text:
             self._set_status(
                 state="session_waiting" if session_active else "waiting_wakeword",
-                message="음성 대화 중 · 다시 말씀해 주세요" if session_active else f"‘{self.display_name}’ 호출어 대기 중",
+                message="명령을 다시 말씀해 주세요" if session_active else f"‘{self.display_name}’ 호출어 대기 중",
             )
             return None
 
         self._set_status(
             state="session_waiting" if session_active else "waiting_wakeword",
-            message="음성 대화 중 · 호출어 없이 말씀하세요" if session_active else f"‘{self.display_name}’ 호출어 대기 중",
+            message="명령 처리 중 · 완료 후 호출 대기로 돌아갑니다" if session_active else f"‘{self.display_name}’ 호출어 대기 중",
             last_transcript=text,
             last_error=None,
         )
@@ -421,7 +521,7 @@ class WakeWordService:
         pre_roll = deque(maxlen=max(3, int(0.8 / frame_sec)))
         voice_hits = 0
 
-        self._set_status(state="session_waiting", message="음성 대화 중 · 호출어 없이 말씀하세요")
+        self._set_status(state="session_waiting", message="명령 대기 중 · 명령을 하나 말씀하세요")
 
         while not self._stop_event.is_set():
             active, deadline = self._session_snapshot()
@@ -450,6 +550,92 @@ class WakeWordService:
                 return self._record_command(stream, np_module, list(pre_roll), noise_rms), noise_rms
 
         return None, noise_rms
+
+    def _wait_for_followup_wake(
+        self,
+        stream: Any,
+        np_module: Any,
+        noise_rms: float,
+    ) -> tuple[bytes | None, float]:
+        frame_sec = self.frame_size / self.sample_rate
+        pre_roll = deque(maxlen=max(2, int(0.35 / frame_sec)))
+        voice_hits = 0
+        self._set_status(
+            state="waiting_wakeword",
+            message=f"‘{self.followup_display_name}’ 호출어 대기 중",
+        )
+
+        while not self._stop_event.is_set():
+            raw = stream.read(self.frame_size, exception_on_overflow=False)
+            samples = np_module.frombuffer(raw, dtype=np_module.int16)
+            rms = float(
+                np_module.sqrt(np_module.mean(samples.astype(np_module.float32) ** 2))
+            ) if samples.size else 0.0
+
+            with self._lock:
+                enabled = self._enabled
+                suppressed_until = self._suppressed_until
+            if not enabled:
+                return None, noise_rms
+            if time.monotonic() < suppressed_until:
+                pre_roll.clear()
+                voice_hits = 0
+                continue
+
+            noise_rms = noise_rms * 0.995 + min(rms, self.rms_min * 2) * 0.005
+            threshold = max(self.rms_min, noise_rms * self.rms_multiplier)
+            pre_roll.append(raw)
+            voice_hits = voice_hits + 1 if rms >= threshold else 0
+            if voice_hits >= self.session_voice_hits:
+                return (
+                    self._record_followup_wake(
+                        stream,
+                        np_module,
+                        list(pre_roll),
+                        noise_rms,
+                    ),
+                    noise_rms,
+                )
+        return None, noise_rms
+
+    def _record_followup_wake(
+        self,
+        stream: Any,
+        np_module: Any,
+        initial_frames: list[bytes],
+        noise_rms: float,
+    ) -> bytes:
+        frames = list(initial_frames)
+        started_at = time.monotonic()
+        last_voice_at = started_at
+        threshold = max(self.rms_min, noise_rms * self.rms_multiplier)
+
+        while not self._stop_event.is_set():
+            raw = stream.read(self.frame_size, exception_on_overflow=False)
+            frames.append(raw)
+            samples = np_module.frombuffer(raw, dtype=np_module.int16)
+            rms = float(
+                np_module.sqrt(np_module.mean(samples.astype(np_module.float32) ** 2))
+            ) if samples.size else 0.0
+            now = time.monotonic()
+            elapsed = now - started_at
+            if rms >= threshold:
+                last_voice_at = now
+            if elapsed >= self.followup_wake_max_sec:
+                break
+            if (
+                elapsed >= self.followup_wake_min_sec
+                and now - last_voice_at >= self.followup_wake_silence_sec
+            ):
+                break
+
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(self.sample_rate)
+            wav_file.writeframes(b"".join(frames))
+        return wav_io.getvalue()
 
     def _record_command(self, stream: Any, np_module: Any, initial_frames: list[bytes], noise_rms: float) -> bytes:
         self._emit("listening", session_active=True)

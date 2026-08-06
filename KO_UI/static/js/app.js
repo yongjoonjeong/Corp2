@@ -1394,7 +1394,7 @@ function updateWakeUi(overrideText = "") {
   let label = overrideText || wake.message || "음성 상태 확인 중";
   if (!state.sttConfigured) label = "음성 기능 확인 필요";
   else if (!wake.enabled) label = "음성 대기 꺼짐";
-  else if (inVoiceSession && wake.state === "session_waiting") label = "음성 대화 중";
+  else if (inVoiceSession && wake.state === "session_waiting") label = "명령 대기 중";
   stateText.textContent = label;
 
   if (topLabel) {
@@ -1402,7 +1402,7 @@ function updateWakeUi(overrideText = "") {
     else if (!wake.enabled) topLabel.textContent = "음성 대기 꺼짐";
     else if (wake.state === "wake_detected" || wake.state === "command_listening") topLabel.textContent = "명령 청취 중";
     else if (wake.state === "transcribing") topLabel.textContent = "명령 분석 중";
-    else if (inVoiceSession) topLabel.textContent = "음성 대화 중";
+    else if (inVoiceSession) topLabel.textContent = "명령 대기 중";
     else if (wake.state === "error") topLabel.textContent = "연결 확인 필요";
     else topLabel.textContent = "호출어 대기";
   }
@@ -1412,7 +1412,7 @@ function updateWakeUi(overrideText = "") {
   else if (!wake.enabled) hint.textContent = "마이크 켜기를 누르면 호출어 감지를 재개합니다";
   else if (wake.state === "wake_detected" || wake.state === "command_listening") hint.textContent = "지금 명령을 말해 주세요";
   else if (wake.state === "transcribing") hint.textContent = "음성 명령을 확인하고 있습니다";
-  else if (inVoiceSession) hint.textContent = "호출어 없이 계속 말씀하세요 · 30초 동안 대화가 이어집니다";
+  else if (inVoiceSession) hint.textContent = "명령을 하나 말씀해 주세요 · 처리 후 호출 대기로 돌아갑니다";
   else hint.textContent = `대기 중 · “${wake.display_name || "웨이크 업 케이오"}”라고 부른 뒤 명령을 말해 주세요`;
 }
 
@@ -1448,7 +1448,7 @@ function handleWakeEvent(event) {
   if (event.type === "session_started" || event.type === "session_extended") {
     Object.assign(state.wake, payload, { session_active: true });
     state.wake.state = payload.state || "session_waiting";
-    state.wake.message = payload.message || "음성 대화 중 · 호출어 없이 말씀하세요";
+    state.wake.message = payload.message || "명령 대기 중 · 명령을 하나 말씀하세요";
     updateWakeUi();
     return;
   }
@@ -1488,7 +1488,7 @@ function handleWakeEvent(event) {
     state.wake.session_active = sessionActive;
     state.wake.state = sessionActive ? "session_waiting" : "waiting_wakeword";
     state.wake.message = sessionActive
-      ? "음성 대화 중 · 호출어 없이 말씀하세요"
+      ? "명령 처리 중 · 완료 후 호출 대기로 돌아갑니다"
       : `‘${state.wake.display_name || "웨이크 업 케이오"}’ 호출어 대기 중`;
     const transcript = String(payload.text || "").trim();
     $("#voicePanel").classList.add("open");
@@ -1523,7 +1523,7 @@ function extractWakeCommand(rawText) {
     .toLowerCase()
     .replace(/[.,!?~·:;\-]/g, "")
     .replace(/\s+/g, "");
-  const variants = ["웨이크업케이오", "웨이크업코", "웨이크업ko", "wakeupko", "헤이케이오", "heyko", "록키야", "로키야", "록키", "로키", "rocky"];
+  const variants = ["웨이크업케이오", "웨이크업코", "웨이크업ko", "wakeupko", "헤이케이오", "heyko", "케이오야", "케이오", "케이요", "ko", "록키야", "로키야", "록키", "로키", "rocky"];
   let best = null;
   for (const variant of variants) {
     const index = normalized.indexOf(variant);
