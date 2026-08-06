@@ -1,0 +1,13 @@
+{
+  "video_file": "realsense_20260805_163743.mp4",
+  "recorded_at": "2026-08-05T16:40:22",
+  "device_name": "RealSense D435I",
+  "serial_number": "215322073317",
+  "width": 1280,
+  "height": 720,
+  "configured_fps": 30,
+  "codec": "mp4v",
+  "recorded_frames": 4747,
+  "duration_sec": 158.386,
+  "effective_recording_fps": 29.971
+}

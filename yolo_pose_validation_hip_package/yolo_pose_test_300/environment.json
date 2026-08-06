@@ -1,0 +1,30 @@
+{
+  "created_at": "2026-08-05T17:30:39",
+  "python": "3.10.12 (main, Jun 22 2026, 18:55:27) [GCC 11.4.0]",
+  "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.35",
+  "torch": "2.6.0+cu124",
+  "ultralytics": "8.4.57",
+  "opencv": "5.0.0",
+  "cuda_available": false,
+  "cuda_device_name": null,
+  "selected_device": "cpu",
+  "arguments": {
+    "video": "realsense_20260805_163743.mp4",
+    "models": [
+      "yolov8n-pose.pt",
+      "yolo11n-pose.pt",
+      "yolo26n-pose.pt"
+    ],
+    "output_dir": "/home/yoonsik/Downloads/yolo_pose_validation_hip_package/yolo_pose_test_300",
+    "device": "cpu",
+    "imgsz": 640,
+    "conf": 0.25,
+    "kpt_conf": 0.35,
+    "tracker": "botsort.yaml",
+    "target_timeout": 30,
+    "max_frames": 300,
+    "frame_stride": 1,
+    "no_video": true,
+    "show": true
+  }
+}
