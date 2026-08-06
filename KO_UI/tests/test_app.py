@@ -58,6 +58,21 @@ class KoApiTest(unittest.TestCase):
         with urlopen(req, timeout=3) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
 
+    def test_local_pose_assets_are_served_with_browser_compatible_types(self):
+        assets = {
+            "/static/vendor/mediapipe/tasks-vision-0.10.14/vision_bundle.mjs": "javascript",
+            "/static/vendor/mediapipe/tasks-vision-0.10.14/wasm/vision_wasm_internal.wasm": "application/wasm",
+            "/static/vendor/mediapipe/tasks-vision-0.10.14/wasm/vision_wasm_nosimd_internal.wasm": "application/wasm",
+            "/static/vendor/mediapipe/models/pose_landmarker_lite.task": "application/octet-stream",
+        }
+        for path, expected_type in assets.items():
+            with self.subTest(path=path):
+                with urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=3) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(expected_type, response.headers.get("Content-Type", ""))
+                    self.assertGreater(int(response.headers.get("Content-Length", "0")), 1000)
+                    self.assertGreater(len(response.read()), 1000)
+
     def test_health_and_user_flow(self):
         status, health = self.request("/api/health")
         self.assertEqual(status, 200)
