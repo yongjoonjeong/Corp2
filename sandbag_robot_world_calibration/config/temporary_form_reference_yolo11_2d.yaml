@@ -1,0 +1,225 @@
+# Temporary YOLO11n-Pose 2D webcam reference for the ROS 2 MVP.
+# All ratios are normalized by the shoulder width measured in the image.
+# Motion/classification/scoring values match the existing MediaPipe MVP. Only
+# min_visibility is mapped to the validated YOLO keypoint-confidence scale.
+# Replace these targets/tolerances with statistics from recorded correct punches.
+
+detector:
+  # All speed units are shoulder-widths per second.
+  # WAIT_GUARD only uses guard_speed. READY stays latched while a punch accelerates.
+  guard_speed: 0.35
+  start_speed: 1.00
+  end_speed: 0.45
+  speed_window: 3
+
+  # ACTIVE starts after speed and at least one pose-change condition are both true.
+  start_displacement_ratio: 0.12
+  start_extension_deg: 12.0
+  start_confirm_frames: 2
+
+  # Guard requires both wrists to remain reasonably close to the face.
+  guard_max_wrist_face_ratio: 1.60
+  max_lost_visibility_frames: 8
+  ready_frames: 6
+  end_frames: 4
+  min_duration_s: 0.12
+  max_duration_s: 1.50
+  cooldown_s: 0.50
+  min_visibility: 0.35
+
+classification:
+  # Smooth normalized motion features only. Displayed joints and the selected
+  # evidence frame still use the original YOLO samples.
+  trajectory_smoothing_window: 3
+
+  # First impact estimate: use the earliest frame reaching this fraction of
+  # peak planar reach, forward depth, and elbow extension. Recovery is ignored.
+  impact_peak_fraction: 0.92
+
+  # Uppercut is measured from its downward chamber to the following upward
+  # apex, rather than from guard to the generic reach/extension peak.
+  uppercut_smoothing_window: 3
+  uppercut_impact_peak_fraction: 0.95
+  uppercut_min_upward_ratio: 0.22
+  uppercut_max_elbow_angle: 155.0
+  uppercut_vertical_dominance: 1.05
+  uppercut_min_wrist_above_elbow_ratio: 0.03
+
+  # Hook: outside-to-inside travel with lateral motion dominant over upward motion.
+  # Higher minimums/dominance make hook stricter; lower values make it looser.
+  hook_min_lateral_ratio: 0.38
+  hook_min_inward_ratio: 0.25
+  hook_lateral_dominance: 1.10
+  hook_max_elbow_angle: 145.0
+  hook_max_wrist_elbow_height_ratio: 0.40
+
+  # Full-event outside chamber -> inward contact detection. This prevents the
+  # outside preparation point from becoming the Hook impact point and rejects
+  # a monotonic front-camera Straight moving toward image center.
+  hook_impact_peak_fraction: 0.92
+  hook_min_outward_chamber_ratio: 0.12
+  hook_min_ordered_inward_ratio: 0.35
+  hook_min_outward_steps: 2
+  hook_min_outward_consistency: 0.65
+  hook_min_inward_steps: 2
+  hook_min_inward_consistency: 0.60
+  hook_min_turn_angle_deg: 70.0
+  hook_ordered_max_elbow_angle: 150.0
+  hook_max_extension_gain_deg: 25.0
+
+  # Once a curved Hook has swept inward this far, use its late contact frame
+  # for the hit marker even if it did not start with an outside chamber.
+  hook_arc_contact_min_inward_ratio: 0.25
+
+  # Near-miss curved-hook fallback. Higher lateral scale/dominance and lower
+  # elbow slack are stricter. Inward displacement alone is intentionally absent.
+  hook_fallback_lateral_scale: 0.85
+  hook_fallback_lateral_dominance: 1.05
+  hook_fallback_elbow_slack_deg: 5.0
+
+  # Curved outbound paths are Hook evidence. A strong curve can override a
+  # misleadingly large 2D elbow extension.
+  hook_min_path_curvature_ratio: 0.18
+  hook_max_path_linearity: 0.88
+  hook_strong_arc_min_curvature_ratio: 0.25
+  hook_strong_arc_max_linearity: 0.82
+  hook_strong_arc_max_elbow_angle: 160.0
+
+  # Relaxed 2D thresholds compensate for foreshortening when punching toward
+  # the camera. A straight can also pass through shoulder-relative z motion.
+  # Lower minimums make straight more generous.
+  straight_min_peak_elbow_angle: 132.0
+  straight_min_extension_gain_deg: 8.0
+  straight_min_depth_gain_ratio: 0.15
+  straight_depth_min_peak_elbow_angle: 123.0
+  straight_depth_min_extension_gain_deg: 6.0
+
+  # Frontal straight: small screen-plane travel plus partial elbow extension.
+  # A larger max travel is more generous; lower angle/gain minimums are generous.
+  straight_max_planar_travel_ratio: 0.32
+  straight_planar_min_peak_elbow_angle: 132.0
+  straight_planar_min_extension_gain_deg: 8.0
+
+  # Target-direction-independent Straight: the guard-to-impact path must be
+  # direct even when the target is to the camera's left or right.
+  straight_min_direct_travel_ratio: 0.12
+  straight_min_path_linearity: 0.88
+  straight_max_path_curvature_ratio: 0.25
+  straight_path_min_peak_elbow_angle: 123.0
+  straight_path_min_extension_gain_deg: 6.0
+
+  # A very clear 2D extension or a depth pass is evaluated after a vertically
+  # dominant uppercut candidate has been ruled out.
+  straight_priority_peak_elbow_angle: 150.0
+  straight_priority_extension_gain_deg: 25.0
+
+feedback:
+  # An evidence JPEG is published if total score is below score_threshold
+  # or any feature error/tolerance ratio reaches joint_error_threshold.
+  score_threshold: 30.0
+  joint_error_threshold: 1.0
+  # The annotated JPEG is also saved locally only when total score is below this.
+  save_score_threshold: 30.0
+  # GOOD! is shown below the impact point at or above this score;
+  # otherwise BAD.. is shown in the same position.
+  pass_score_threshold: 30.0
+
+profiles:
+  straight:
+    features:
+      strike_elbow_angle_deg:
+        target: 165.0
+        tolerance: 22.0
+        weight: 0.30
+        joint: strike_elbow
+        code: elbow_not_extended
+      elbow_flare_ratio:
+        target: 0.10
+        tolerance: 0.18
+        weight: 0.20
+        joint: strike_elbow
+        code: elbow_flared
+      guard_to_face_ratio:
+        target: 0.45
+        tolerance: 0.35
+        weight: 0.25
+        joint: guard_wrist
+        code: guard_dropped
+      torso_lean_deg:
+        target: 5.0
+        tolerance: 15.0
+        weight: 0.15
+        joint: torso
+        code: torso_overlean
+      strike_wrist_height_ratio:
+        target: 0.00
+        tolerance: 0.35
+        weight: 0.10
+        joint: strike_wrist
+        code: wrist_height_off
+
+  hook:
+    features:
+      strike_elbow_angle_deg:
+        target: 100.0
+        tolerance: 30.0
+        weight: 0.25
+        joint: strike_elbow
+        code: hook_elbow_angle_off
+      elbow_flare_ratio:
+        target: 0.55
+        tolerance: 0.35
+        weight: 0.15
+        joint: strike_elbow
+        code: hook_elbow_path_off
+      wrist_elbow_height_ratio:
+        target: 0.00
+        tolerance: 0.25
+        weight: 0.20
+        joint: strike_wrist
+        code: hook_wrist_elbow_misaligned
+      guard_to_face_ratio:
+        target: 0.45
+        tolerance: 0.35
+        weight: 0.25
+        joint: guard_wrist
+        code: guard_dropped
+      torso_lean_deg:
+        target: 8.0
+        tolerance: 18.0
+        weight: 0.15
+        joint: torso
+        code: torso_overlean
+
+  uppercut:
+    features:
+      strike_elbow_angle_deg:
+        target: 90.0
+        tolerance: 35.0
+        weight: 0.25
+        joint: strike_elbow
+        code: uppercut_elbow_angle_off
+      wrist_elbow_height_ratio:
+        target: -0.25
+        tolerance: 0.30
+        weight: 0.20
+        joint: strike_wrist
+        code: uppercut_wrist_path_off
+      strike_wrist_height_ratio:
+        target: -0.25
+        tolerance: 0.40
+        weight: 0.15
+        joint: strike_wrist
+        code: uppercut_height_off
+      guard_to_face_ratio:
+        target: 0.45
+        tolerance: 0.35
+        weight: 0.25
+        joint: guard_wrist
+        code: guard_dropped
+      torso_lean_deg:
+        target: 8.0
+        tolerance: 18.0
+        weight: 0.15
+        joint: torso
+        code: torso_overlean

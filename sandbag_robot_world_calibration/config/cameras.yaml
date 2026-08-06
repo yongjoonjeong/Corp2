@@ -1,0 +1,34 @@
+# All calibration and runtime RGB streams use this resolution.
+image_width: 640
+image_height: 480
+fps: 30
+
+cameras:
+  # FRONT is selected only through pyrealsense2. No /dev/videoN entry is used,
+  # so RealSense IR/metadata nodes can never be mistaken for a C270.
+  front:
+    type: realsense
+    serial: ""              # Fill only when more than one RealSense is connected.
+    depth:
+      width: 640
+      height: 480
+      fps: 30
+      preview_min_mm: 200
+      preview_max_mm: 4000
+
+  # LEFT/RIGHT are both Logitech C270 RGB cameras. Their stable USB-port paths
+  # are written to config/camera_roles.yaml by the one-time assignment command:
+  #   python3 00_check_cameras.py --assign-c270
+  left:
+    type: usb
+    device: auto
+    role_map: camera_roles.yaml
+    product_contains: C270
+    fourcc: MJPG
+
+  right:
+    type: usb
+    device: auto
+    role_map: camera_roles.yaml
+    product_contains: C270
+    fourcc: MJPG
