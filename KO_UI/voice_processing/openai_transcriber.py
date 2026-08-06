@@ -22,7 +22,7 @@ def transcribe_audio_bytes(audio_bytes: bytes, filename: str = "ko-command.wav",
     model = os.environ.get("OPENAI_TRANSCRIPTION_MODEL", "whisper-1").strip() or "whisper-1"
     prompt = os.environ.get(
         "OPENAI_TRANSCRIPTION_PROMPT",
-        "웨이크 업 케이오, 웨이크업 케이오, Wake up KO, 헤이 케이오, "
+        "웨이크 업 케이오, 웨이크업 케이오, 케이오, 케이오야, KO, Wake up KO, 헤이 케이오, "
         "사용자 등록, 운동 시작, 훈련 시작, 운동 종료, 오른손, 왼손, "
         "잽, 스트레이트, 일시정지, 다시 시작, 현재 기록",
     ).strip()

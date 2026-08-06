@@ -315,3 +315,43 @@ class VoiceSessionStateTest(unittest.TestCase):
         self.assertTrue(WakeWordService._is_exit_command("대화 종료"))
         self.assertTrue(WakeWordService._is_exit_command("음성 대기 모드로 돌아가"))
         self.assertFalse(WakeWordService._is_exit_command("오른손 스트레이트 1분 훈련"))
+
+    def test_followup_wakeword_variants(self):
+        from voice_processing.wakeword_service import WakeWordService
+
+        self.assertTrue(WakeWordService._is_followup_wake("케이오"))
+        self.assertTrue(WakeWordService._is_followup_wake("케이 오!"))
+        self.assertTrue(WakeWordService._is_followup_wake("K.O."))
+        self.assertFalse(WakeWordService._is_followup_wake("웨이크 업 케이오"))
+        self.assertFalse(WakeWordService._is_followup_wake("오른손 스트레이트"))
+
+    def test_display_name_changes_only_after_initial_full_wake(self):
+        from voice_processing.wakeword_service import WakeWordService
+
+        service = WakeWordService(Path("/tmp/not-started-wakeword.tflite"), lambda *_: None)
+        self.assertEqual(service.status()["display_name"], "웨이크 업 케이오")
+        self.assertFalse(service.status()["initial_wake_completed"])
+
+        service._mark_initial_wake_completed()
+
+        self.assertEqual(service.status()["display_name"], "케이오")
+        self.assertTrue(service.status()["initial_wake_completed"])
+
+    def test_followup_wake_transcription_does_not_emit_a_command(self):
+        from unittest.mock import patch
+        from voice_processing.wakeword_service import WakeWordService
+
+        events = []
+        service = WakeWordService(
+            Path("/tmp/not-started-wakeword.tflite"),
+            lambda event_type, payload: events.append((event_type, payload)),
+        )
+        service._mark_initial_wake_completed()
+        with patch(
+            "voice_processing.wakeword_service.transcribe_audio_bytes",
+            return_value={"text": "케이오", "model": "test"},
+        ):
+            transcript = service._transcribe_followup_wake(b"audio")
+
+        self.assertEqual(transcript, "케이오")
+        self.assertNotIn("transcript", [event_type for event_type, _ in events])
