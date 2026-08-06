@@ -452,7 +452,7 @@ async function registerUser(event) {
     selectUser(user);
     resetMeasurement();
     showScreen("measure");
-    speak(`${user.name}님, 이제 양팔 리치를 측정할게요. 전신이 보이도록 서서 양팔을 수평으로 벌려주세요.`);
+    speak(`${user.name}님, 이제 양팔 리치를 측정할게요. 전신이 보이도록 서서 손가락을 펴고 양팔을 수평으로 벌려주세요.`);
   } catch (error) {
     showToast(error.message, "error");
   }
@@ -475,9 +475,9 @@ async function ensurePoseLandmarker() {
   if (state.poseLandmarker) return state.poseLandmarker;
   if (state.poseLoadFailed) throw new Error("자세 인식 모듈을 불러오지 못했습니다. 직접 입력을 이용해 주세요.");
   try {
-    const visionModule = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm");
+    const visionModule = await import("/static/vendor/mediapipe/tasks-vision-0.10.14/vision_bundle.mjs");
     const vision = await visionModule.FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm"
+      "/static/vendor/mediapipe/tasks-vision-0.10.14/wasm"
     );
     const commonOptions = {
       runningMode: "VIDEO",
@@ -486,7 +486,7 @@ async function ensurePoseLandmarker() {
       minPosePresenceConfidence: 0.55,
       minTrackingConfidence: 0.55,
     };
-    const modelAssetPath = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+    const modelAssetPath = "/static/vendor/mediapipe/models/pose_landmarker_lite.task";
     try {
       state.poseLandmarker = await visionModule.PoseLandmarker.createFromOptions(vision, {
         ...commonOptions,
@@ -503,7 +503,7 @@ async function ensurePoseLandmarker() {
   } catch (error) {
     console.error("PoseLandmarker load failed", error);
     state.poseLoadFailed = true;
-    throw new Error("자세 인식 기능을 준비하지 못했습니다. 인터넷 연결을 확인하거나 직접 입력을 이용해 주세요.");
+    throw new Error("로컬 자세 인식 모델을 준비하지 못했습니다. UI 서버를 다시 시작하거나 직접 입력을 이용해 주세요.");
   }
 }
 
@@ -542,6 +542,7 @@ async function startPoseLoop(video, canvas, onResult) {
 
 const POSE_CONNECTIONS = [
   [11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],
+  [15,17],[15,19],[16,18],[16,20],
   [23,25],[25,27],[27,29],[27,31],[24,26],[26,28],[28,30],[28,32]
 ];
 
@@ -563,7 +564,7 @@ function drawPose(ctx, canvas, landmarks) {
     ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
     ctx.stroke();
   }
-  [11,12,13,14,15,16].forEach((index) => {
+  [11,12,13,14,15,16,17,18,19,20].forEach((index) => {
     const p = landmarks[index];
     if (!p || (p.visibility ?? 1) < .45) return;
     ctx.beginPath();
@@ -606,10 +607,29 @@ function calculateBodyMetrics(result) {
   const leftArm = dist3(w[11], w[13]) + dist3(w[13], w[15]);
   const rightArm = dist3(w[12], w[14]) + dist3(w[14], w[16]);
   const shoulderWidth = dist3(w[11], w[12]);
-  const handAllowanceM = .09;
-  const wingspanCm = (leftArm + shoulderWidth + rightArm + handAllowanceM * 2) * scale * 100;
-  const leftReachCm = (leftArm + handAllowanceM) * scale * 100;
-  const rightReachCm = (rightArm + handAllowanceM) * scale * 100;
+  const leftHandCandidates = [17,19].map((i) => ({
+    distance: w[i] ? dist3(w[15], w[i]) : 0,
+    visibility: n[i]?.visibility ?? 0,
+  }));
+  const rightHandCandidates = [18,20].map((i) => ({
+    distance: w[i] ? dist3(w[16], w[i]) : 0,
+    visibility: n[i]?.visibility ?? 0,
+  }));
+  const leftOpenHand = Math.max(...leftHandCandidates.filter((item) => item.visibility >= .55).map((item) => item.distance), 0);
+  const rightOpenHand = Math.max(...rightHandCandidates.filter((item) => item.visibility >= .55).map((item) => item.distance), 0);
+  const openHandConfidence = Math.min(
+    Math.max(...leftHandCandidates.map((item) => item.visibility)),
+    Math.max(...rightHandCandidates.map((item) => item.visibility)),
+  );
+  const openHandsVisible = leftOpenHand > 0 && rightOpenHand > 0;
+
+  // Wingspan uses the observed open-hand fingertip landmarks. Punch reach uses
+  // a separate wrist-to-front-of-fist allowance because YOLO/MediaPipe wrists
+  // do not represent the actual contact point of a closed fist.
+  const fistFrontAllowanceCm = 9;
+  const wingspanCm = (leftArm + shoulderWidth + rightArm + leftOpenHand + rightOpenHand) * scale * 100;
+  const leftReachCm = leftArm * scale * 100 + fistFrontAllowanceCm;
+  const rightReachCm = rightArm * scale * 100 + fistFrontAllowanceCm;
 
   const leftAngle = angleDeg(w[11], w[13], w[15]);
   const rightAngle = angleDeg(w[12], w[14], w[16]);
@@ -618,7 +638,11 @@ function calculateBodyMetrics(result) {
   const centered = centerX > .28 && centerX < .72;
   const confidence = Math.min(1, visibility.reduce((a, b) => a + b, 0) / visibility.length);
 
-  return { wingspanCm, leftReachCm, rightReachCm, leftAngle, rightAngle, armsHorizontal, centered, confidence };
+  return {
+    wingspanCm, leftReachCm, rightReachCm,
+    leftAngle, rightAngle, armsHorizontal, centered, confidence,
+    openHandsVisible, openHandConfidence,
+  };
 }
 
 function resetMeasurement() {
@@ -629,7 +653,7 @@ function resetMeasurement() {
 function updateMeasurementUI() {
   const stage = state.measurement.stage;
   const labels = {
-    wingspan: "전신이 보이도록 서서 양팔을 수평으로 벌려주세요.",
+    wingspan: "전신이 보이도록 서서 손가락을 펴고 양팔을 수평으로 벌려주세요.",
     right: "가드 자세에서 오른손을 천천히 끝까지 뻗어주세요.",
     left: "가드 자세에서 왼손을 천천히 끝까지 뻗어주세요.",
   };
@@ -679,17 +703,22 @@ function processMeasurementFrame(result) {
   }
   const stage = state.measurement.stage;
   let valid = metrics.centered;
-  if (stage === "wingspan") valid = valid && metrics.armsHorizontal && metrics.leftAngle > 145 && metrics.rightAngle > 145;
+  if (stage === "wingspan") valid = valid && metrics.openHandsVisible && metrics.armsHorizontal && metrics.leftAngle > 145 && metrics.rightAngle > 145;
   if (stage === "right") valid = valid && metrics.rightAngle > 145;
   if (stage === "left") valid = valid && metrics.leftAngle > 145;
 
   $("#cameraMessage").textContent = valid
     ? state.measurement.collecting ? "움직이지 말고 자세를 유지하세요" : "좋습니다. 현재 단계 측정을 눌러주세요"
-    : stage === "wingspan" ? "양팔을 어깨 높이로 곧게 펴주세요" : `${stage === "right" ? "오른팔" : "왼팔"}을 끝까지 펴주세요`;
+    : stage === "wingspan"
+      ? metrics.openHandsVisible ? "양팔을 어깨 높이로 곧게 펴주세요" : "손가락을 펴고 양손 끝이 모두 보이게 해주세요"
+      : `${stage === "right" ? "오른팔" : "왼팔"}을 끝까지 펴주세요`;
 
   if (!state.measurement.collecting || !valid) return;
   const value = stage === "wingspan" ? metrics.wingspanCm : stage === "right" ? metrics.rightReachCm : metrics.leftReachCm;
-  state.measurement.samples.push({ value, confidence: metrics.confidence });
+  const confidence = stage === "wingspan"
+    ? Math.min(metrics.confidence, metrics.openHandConfidence)
+    : metrics.confidence;
+  state.measurement.samples.push({ value, confidence });
   if (state.measurement.samples.length > 30) state.measurement.samples.shift();
   updateMeasurementUI();
   if (state.measurement.samples.length >= 30) finishMeasurementStage();
@@ -1577,7 +1606,7 @@ async function voiceStartReachMeasurement() {
   }
   resetMeasurement();
   showScreen("measure");
-  speak("리치 측정을 시작합니다. 카메라 중앙에 서서 양팔을 벌려 주세요.");
+  speak("리치 측정을 시작합니다. 카메라 중앙에 서서 손가락을 펴고 양팔을 벌려 주세요.");
   await sleep(350);
   try {
     await startMeasurementCamera();

@@ -160,6 +160,14 @@ STOPPING_FOR_ACTION
 
 비전은 카메라 오류가 UI나 로봇을 종료시키지 않도록 기본 실행에서 분리되어 있습니다.
 
+사용자 리치 측정에 사용하는 MediaPipe Tasks Vision `0.10.14`와 Pose Landmarker
+Lite 모델은 `static/vendor/mediapipe/`에 포함되어 있습니다. 리치 측정은 인터넷이나
+외부 CDN 없이 브라우저에서 로컬 JS·WASM·모델 파일로 실행됩니다.
+
+양팔 리치는 손가락을 편 자세에서 손목과 검지/새끼손가락 끝 랜드마크 중 더 먼
+지점을 사용합니다. 좌·우 펀치 리치는 어깨→팔꿈치→손목 길이에 손목부터 주먹
+앞면까지의 고정 보정값 9cm를 별도로 더합니다.
+
 ```bash
 ./run_vision_optional.sh --ros-args -p camera_index:=0
 ```
