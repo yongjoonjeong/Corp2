@@ -1,0 +1,540 @@
+schema_version: 1
+created_at: '2026-08-06T02:23:36.011818+00:00'
+units:
+  translation: mm
+  rotation: 3x3 rotation matrix
+frame_convention:
+  transform_name: T_target_source maps source-frame coordinates into target frame
+  equation: T_base_flange * T_flange_board = T_base_camera * T_camera_board
+  camera_axes: 'OpenCV optical frame: +X right, +Y down, +Z forward'
+  robot_frame: Doosan DR_BASE
+board_mount:
+  T_flange_board_mm:
+  - - -0.9999736153409673
+    - -0.007251042455153445
+    - -0.00043704145003817924
+    - 190.09195092203475
+  - - -0.007250761234988904
+    - 0.9999735070229272
+    - -0.0006416492666991941
+    - -148.01922120921108
+  - - 0.0004416824975832173
+    - -0.0006384634537980845
+    - -0.9999996986404492
+    - 72.54650180552437
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  T_board_flange_mm:
+  - - -0.9999736153409673
+    - -0.007250761234988904
+    - 0.0004416824975832173
+    - 188.98164085943944
+  - - -0.007251042455153445
+    - 0.9999735070229272
+    - -0.0006384634537980845
+    - 149.4399828359996
+  - - -0.00043704145003817924
+    - -0.0006416492666991941
+    - -0.9999996986404492
+    - 72.53458158006846
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  note: Estimated automatically; no tape-measure flange-to-board input was used.
+cameras:
+  front:
+    camera_frame: front_camera_optical_frame
+    T_base_camera_mm:
+    - - -0.9994325185209569
+      - 0.03367739179720394
+      - 0.0006886251482803078
+      - -155.88493019228997
+    - - 0.02005496401018487
+      - 0.6113408013835546
+      - -0.7911132807520446
+      - 477.9274839954016
+    - - -0.02706361656186056
+      - -0.7906505282648275
+      - -0.6116692756818359
+      - 1326.098862429416
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    T_camera_base_mm:
+    - - -0.9994325185209569
+      - 0.02005496401018487
+      - -0.02706361656186056
+      - -129.49225573664071
+    - - 0.03367739179720394
+      - 0.6113408013835546
+      - -0.7906505282648275
+      - 761.5539929115953
+    - - 0.0006886251482803078
+      - -0.7911132807520446
+      - -0.6116692756818359
+      - 1189.3360567730483
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    intrinsic_file: calibration/intrinsics/front.yaml
+    image_width: 640
+    image_height: 480
+  left:
+    camera_frame: left_camera_optical_frame
+    T_base_camera_mm:
+    - - 0.07584468589667503
+      - 0.03404571440962847
+      - 0.9965382446005635
+      - -1539.2896723183542
+    - - 0.02230440847247233
+      - -0.9992247810262209
+      - 0.03243994984266173
+      - -708.8338783643849
+    - - 0.9968701505130583
+      - 0.019766798259690934
+      - -0.07654525917803723
+      - 366.48552795830113
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    T_camera_base_mm:
+    - - 0.07584468589667503
+      - 0.02230440847247233
+      - 0.9968701505130583
+      - -232.78142135350188
+    - - 0.03404571440962847
+      - -0.9992247810262209
+      - 0.019766798259690934
+      - -663.1224058114262
+    - - 0.9965382446005635
+      - 0.03243994984266173
+      - -0.07654525917803723
+      - 1585.0082931673976
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    intrinsic_file: calibration/intrinsics/left.yaml
+    image_width: 640
+    image_height: 480
+  right:
+    camera_frame: right_camera_optical_frame
+    T_base_camera_mm:
+    - - -0.024414518323171652
+      - 0.0908900311885787
+      - -0.9955616171415947
+      - 1264.1499491047596
+    - - 0.03473230976949141
+      - 0.9953343712762353
+      - 0.09001753170476222
+      - -793.3576652897011
+    - - 0.9990983925285455
+      - -0.03238041980396507
+      - -0.0274574299634066
+      - 400.3522101069098
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    T_camera_base_mm:
+    - - -0.024414518323171652
+      - 0.03473230976949141
+      - 0.9990983925285455
+      - -341.5724932785671
+    - - 0.0908900311885787
+      - 0.9953343712762353
+      - -0.03238041980396507
+      - 687.7210973098416
+    - - -0.9955616171415947
+      - 0.09001753170476222
+      - -0.0274574299634066
+      - 1340.9479091983364
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    intrinsic_file: calibration/intrinsics/right.yaml
+    image_width: 640
+    image_height: 480
+metrics:
+  all_cameras:
+    sample_count: 73
+    translation_error_mm:
+      mean: 3.8688267517338173
+      median: 3.508896163631929
+      max: 11.814091340691737
+      p95: 8.678167327813249
+    rotation_error_deg:
+      mean: 0.6936870620435327
+      median: 0.6090599818315399
+      max: 1.8610140289272814
+      p95: 1.435470752959473
+  per_camera:
+    front:
+      sample_count: 24
+      translation_error_mm:
+        mean: 3.298000269677363
+        median: 3.0461145321236964
+        max: 6.321658567524859
+        p95: 6.1291122884584
+      rotation_error_deg:
+        mean: 0.6703097595641297
+        median: 0.5961258998157231
+        max: 1.6455207426050897
+        p95: 1.2108094116617922
+      board_reprojection_error_px:
+        mean: 0.4323786296478636
+        median: 0.43868988510708684
+        max: 0.6418131504828414
+        p95: 0.5688669213393832
+    left:
+      sample_count: 25
+      translation_error_mm:
+        mean: 3.887557481377509
+        median: 3.508896163631929
+        max: 10.325889187505481
+        p95: 7.437372285464182
+      rotation_error_deg:
+        mean: 0.857508408225674
+        median: 0.8514569749998586
+        max: 1.8610140289272814
+        p95: 1.5300537805597978
+      board_reprojection_error_px:
+        mean: 0.26187465219195455
+        median: 0.27347458036805966
+        max: 0.4286484790760846
+        p95: 0.3785884846296667
+    right:
+      sample_count: 24
+      translation_error_mm:
+        mean: 4.420142057078093
+        median: 3.748071860787471
+        max: 11.814091340691737
+        p95: 11.413062567996251
+      rotation_error_deg:
+        mean: 0.5464171289165386
+        median: 0.45029563412669793
+        max: 1.429515993567237
+        p95: 1.2876614783156548
+      board_reprojection_error_px:
+        mean: 0.37486492174795866
+        median: 0.3572199406431757
+        max: 0.518164204366095
+        p95: 0.4990100374556731
+  optimization:
+    first_success: true
+    first_cost: 34.84826298823095
+    final_success: true
+    final_cost: 30.227395639717898
+    final_message: '`ftol` termination condition is satisfied.'
+    rejected_sample_count: 2
+  frame_equation: T_base_flange * T_flange_board = T_base_camera[camera] * T_camera_board
+used_samples:
+- camera: front
+  sample_id: '20260806_110932_088540'
+  reprojection_error_px: 0.4353153253100655
+  corner_count: 60
+- camera: front
+  sample_id: '20260806_110935_419179'
+  reprojection_error_px: 0.4420644449041082
+  corner_count: 64
+- camera: front
+  sample_id: '20260806_110938_388859'
+  reprojection_error_px: 0.5718080593753933
+  corner_count: 61
+- camera: front
+  sample_id: '20260806_110942_024638'
+  reprojection_error_px: 0.5102469276920605
+  corner_count: 52
+- camera: front
+  sample_id: '20260806_110945_461005'
+  reprojection_error_px: 0.39292150827307637
+  corner_count: 54
+- camera: front
+  sample_id: '20260806_110949_128490'
+  reprojection_error_px: 0.45449150391727483
+  corner_count: 36
+- camera: front
+  sample_id: '20260806_110952_536566'
+  reprojection_error_px: 0.4698670801688868
+  corner_count: 29
+- camera: front
+  sample_id: '20260806_111001_809299'
+  reprojection_error_px: 0.36941993824145963
+  corner_count: 43
+- camera: front
+  sample_id: '20260806_111005_305815'
+  reprojection_error_px: 0.28792053842453075
+  corner_count: 41
+- camera: front
+  sample_id: '20260806_111009_217375'
+  reprojection_error_px: 0.27447750606943655
+  corner_count: 46
+- camera: front
+  sample_id: '20260806_111013_881361'
+  reprojection_error_px: 0.2602786001607307
+  corner_count: 41
+- camera: front
+  sample_id: '20260806_111026_530729'
+  reprojection_error_px: 0.359722851266926
+  corner_count: 66
+- camera: front
+  sample_id: '20260806_111030_394619'
+  reprojection_error_px: 0.4345384658054911
+  corner_count: 69
+- camera: front
+  sample_id: '20260806_111034_630717'
+  reprojection_error_px: 0.5467483935039772
+  corner_count: 63
+- camera: front
+  sample_id: '20260806_111039_540799'
+  reprojection_error_px: 0.55220047246866
+  corner_count: 57
+- camera: front
+  sample_id: '20260806_111042_872247'
+  reprojection_error_px: 0.5228490171124025
+  corner_count: 46
+- camera: front
+  sample_id: '20260806_111051_975582'
+  reprojection_error_px: 0.32719999330739424
+  corner_count: 47
+- camera: front
+  sample_id: '20260806_111056_321057'
+  reprojection_error_px: 0.3215250174981343
+  corner_count: 59
+- camera: front
+  sample_id: '20260806_111101_958580'
+  reprojection_error_px: 0.3179932728817239
+  corner_count: 64
+- camera: front
+  sample_id: '20260806_111108_190510'
+  reprojection_error_px: 0.44424086315624683
+  corner_count: 70
+- camera: front
+  sample_id: '20260806_111112_927046'
+  reprojection_error_px: 0.35337341178707943
+  corner_count: 70
+- camera: front
+  sample_id: '20260806_111118_827801'
+  reprojection_error_px: 0.5389748313121234
+  corner_count: 65
+- camera: front
+  sample_id: '20260806_111124_667168'
+  reprojection_error_px: 0.5470959384287037
+  corner_count: 70
+- camera: front
+  sample_id: '20260806_111128_707211'
+  reprojection_error_px: 0.6418131504828414
+  corner_count: 70
+- camera: left
+  sample_id: '20260806_111637_176708'
+  reprojection_error_px: 0.27347458036805966
+  corner_count: 49
+- camera: left
+  sample_id: '20260806_111644_311432'
+  reprojection_error_px: 0.2829621806960267
+  corner_count: 42
+- camera: left
+  sample_id: '20260806_111647_379998'
+  reprojection_error_px: 0.3634317793643363
+  corner_count: 45
+- camera: left
+  sample_id: '20260806_111651_773166'
+  reprojection_error_px: 0.2807222791860138
+  corner_count: 35
+- camera: left
+  sample_id: '20260806_111655_581106'
+  reprojection_error_px: 0.27963922305652095
+  corner_count: 24
+- camera: left
+  sample_id: '20260806_111700_081703'
+  reprojection_error_px: 0.3823776609459994
+  corner_count: 40
+- camera: left
+  sample_id: '20260806_111705_275093'
+  reprojection_error_px: 0.264870150126138
+  corner_count: 47
+- camera: left
+  sample_id: '20260806_111708_576752'
+  reprojection_error_px: 0.27701564548416274
+  corner_count: 52
+- camera: left
+  sample_id: '20260806_111711_677183'
+  reprojection_error_px: 0.32584003696086844
+  corner_count: 30
+- camera: left
+  sample_id: '20260806_111715_575104'
+  reprojection_error_px: 0.16718431860776706
+  corner_count: 39
+- camera: left
+  sample_id: '20260806_111727_372415'
+  reprojection_error_px: 0.20255562187767637
+  corner_count: 30
+- camera: left
+  sample_id: '20260806_111731_712373'
+  reprojection_error_px: 0.19399986991497367
+  corner_count: 20
+- camera: left
+  sample_id: '20260806_111737_075874'
+  reprojection_error_px: 0.21720238975026773
+  corner_count: 46
+- camera: left
+  sample_id: '20260806_111745_816026'
+  reprojection_error_px: 0.21221636870120375
+  corner_count: 28
+- camera: left
+  sample_id: '20260806_111749_076926'
+  reprojection_error_px: 0.2098544778688162
+  corner_count: 29
+- camera: left
+  sample_id: '20260806_111800_812277'
+  reprojection_error_px: 0.16790172661308145
+  corner_count: 36
+- camera: left
+  sample_id: '20260806_111807_778774'
+  reprojection_error_px: 0.19990322560447119
+  corner_count: 28
+- camera: left
+  sample_id: '20260806_111812_917644'
+  reprojection_error_px: 0.315290825627789
+  corner_count: 56
+- camera: left
+  sample_id: '20260806_111817_612674'
+  reprojection_error_px: 0.29238423678473574
+  corner_count: 23
+- camera: left
+  sample_id: '20260806_111827_014002'
+  reprojection_error_px: 0.2864685368526076
+  corner_count: 24
+- camera: left
+  sample_id: '20260806_111835_310880'
+  reprojection_error_px: 0.2840007652112654
+  corner_count: 29
+- camera: left
+  sample_id: '20260806_111845_517734'
+  reprojection_error_px: 0.19334523438744558
+  corner_count: 20
+- camera: left
+  sample_id: '20260806_111857_289017'
+  reprojection_error_px: 0.26771976837948264
+  corner_count: 23
+- camera: left
+  sample_id: '20260806_111906_312209'
+  reprojection_error_px: 0.4286484790760846
+  corner_count: 48
+- camera: left
+  sample_id: '20260806_111913_279746'
+  reprojection_error_px: 0.1778569233530692
+  corner_count: 26
+- camera: right
+  sample_id: '20260806_111951_463142'
+  reprojection_error_px: 0.336255410442717
+  corner_count: 49
+- camera: right
+  sample_id: '20260806_112012_300899'
+  reprojection_error_px: 0.3131201236091355
+  corner_count: 41
+- camera: right
+  sample_id: '20260806_112025_562997'
+  reprojection_error_px: 0.3049854957563406
+  corner_count: 26
+- camera: right
+  sample_id: '20260806_112033_670957'
+  reprojection_error_px: 0.27097899172351464
+  corner_count: 27
+- camera: right
+  sample_id: '20260806_112052_672707'
+  reprojection_error_px: 0.34836963491941936
+  corner_count: 52
+- camera: right
+  sample_id: '20260806_112056_471430'
+  reprojection_error_px: 0.3114117499953948
+  corner_count: 32
+- camera: right
+  sample_id: '20260806_112059_435357'
+  reprojection_error_px: 0.3120666028844546
+  corner_count: 36
+- camera: right
+  sample_id: '20260806_112101_971593'
+  reprojection_error_px: 0.33842132092383564
+  corner_count: 30
+- camera: right
+  sample_id: '20260806_112107_835364'
+  reprojection_error_px: 0.35586296711925053
+  corner_count: 34
+- camera: right
+  sample_id: '20260806_112112_938073'
+  reprojection_error_px: 0.35857691416710086
+  corner_count: 57
+- camera: right
+  sample_id: '20260806_112121_569356'
+  reprojection_error_px: 0.1972069622166729
+  corner_count: 32
+- camera: right
+  sample_id: '20260806_112125_772576'
+  reprojection_error_px: 0.24001310193286868
+  corner_count: 60
+- camera: right
+  sample_id: '20260806_112129_474646'
+  reprojection_error_px: 0.19934002952209529
+  corner_count: 41
+- camera: right
+  sample_id: '20260806_112140_939780'
+  reprojection_error_px: 0.518164204366095
+  corner_count: 33
+- camera: right
+  sample_id: '20260806_112147_574421'
+  reprojection_error_px: 0.4814259060721947
+  corner_count: 37
+- camera: right
+  sample_id: '20260806_112152_046372'
+  reprojection_error_px: 0.4846164176677484
+  corner_count: 39
+- camera: right
+  sample_id: '20260806_112201_341425'
+  reprojection_error_px: 0.4646312098355236
+  corner_count: 48
+- camera: right
+  sample_id: '20260806_112204_877475'
+  reprojection_error_px: 0.47542654468906315
+  corner_count: 62
+- camera: right
+  sample_id: '20260806_112208_240548'
+  reprojection_error_px: 0.48064796922590225
+  corner_count: 28
+- camera: right
+  sample_id: '20260806_112232_506890'
+  reprojection_error_px: 0.3963175744847182
+  corner_count: 44
+- camera: right
+  sample_id: '20260806_112237_708326'
+  reprojection_error_px: 0.37169081137529136
+  corner_count: 43
+- camera: right
+  sample_id: '20260806_112243_745156'
+  reprojection_error_px: 0.44879301432786917
+  corner_count: 33
+- camera: right
+  sample_id: '20260806_112247_946517'
+  reprojection_error_px: 0.4873712179057969
+  corner_count: 56
+- camera: right
+  sample_id: '20260806_112251_341587'
+  reprojection_error_px: 0.5010639467880043
+  corner_count: 29
+rejected_samples:
+- camera: front
+  sample_id: '20260806_111017_149108'
+  reprojection_error_px: 0.21246521415554814
+  corner_count: 26
+- camera: right
+  sample_id: '20260806_112004_074659'
+  reprojection_error_px: 0.23382073296605085
+  corner_count: 28
+opencv_version: 5.0.0

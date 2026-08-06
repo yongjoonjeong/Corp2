@@ -6,4 +6,7 @@ calibration/intrinsic_images/
 calibration/external_samples/*/*/
 calibration/validation/
 models/*.pt
+!models/yolo11n-pose.pt
+feedback_images/
+feedback_images_3d/
 *.jpg

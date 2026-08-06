@@ -1048,6 +1048,86 @@ def _first_near_peak_index(values: np.ndarray, fraction: float) -> int:
     return int(indices[0]) if indices.size else int(np.argmax(values))
 
 
+def _median_smooth_1d_3d(
+    values: np.ndarray,
+    window: int,
+    *,
+    repair_endpoints: bool = False,
+) -> np.ndarray:
+    """Robustly smooth a short pose trajectory without hiding real endpoints."""
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if values.size < 3 or window <= 1:
+        return values.copy()
+    window = max(int(window), 1)
+    if window % 2 == 0:
+        window += 1
+    radius = window // 2
+    padded = np.pad(values, (radius, radius), mode="edge")
+    smoothed = np.asarray(
+        [np.median(padded[index : index + window]) for index in range(values.size)],
+        dtype=np.float64,
+    )
+
+    # Edge padding cannot reject a one-frame spike exactly at capture start/end.
+    # Repair only a boundary jump that is at least three times the neighboring
+    # trend, preserving a genuine monotonic chamber or contact endpoint.
+    if repair_endpoints and values.size >= 3:
+        if abs(float(values[0] - values[1])) > max(
+            3.0 * abs(float(values[1] - values[2])),
+            1e-6,
+        ):
+            smoothed[0] = float(np.median(values[: min(window, values.size)]))
+        if abs(float(values[-1] - values[-2])) > max(
+            3.0 * abs(float(values[-2] - values[-3])),
+            1e-6,
+        ):
+            smoothed[-1] = float(np.median(values[-min(window, values.size) :]))
+    return smoothed
+
+
+def _median_smooth_points_3d(points: np.ndarray, window: int) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float64)
+    if len(points) == 0:
+        return points.copy()
+    return np.column_stack(
+        [
+            _median_smooth_1d_3d(
+                points[:, axis],
+                window,
+                repair_endpoints=True,
+            )
+            for axis in range(3)
+        ]
+    )
+
+
+def _maximum_ordered_drop_3d(values: np.ndarray) -> tuple[int, int, float]:
+    """Largest earlier-high to later-low transition (Hook chamber -> hit)."""
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if values.size < 2:
+        return 0, 0, 0.0
+    launch_index = 0
+    running_high_index = 0
+    impact_index = 0
+    best_drop = 0.0
+    for index in range(1, values.size):
+        drop = float(values[running_high_index] - values[index])
+        if drop > best_drop:
+            launch_index = running_high_index
+            impact_index = index
+            best_drop = drop
+        # Latest point on a plateau is the end of the chamber.
+        if values[index] >= values[running_high_index]:
+            running_high_index = index
+    return launch_index, impact_index, best_drop
+
+
+def _maximum_ordered_rise_3d(values: np.ndarray) -> tuple[int, int, float]:
+    """Largest earlier-low to later-high transition (Uppercut low -> apex)."""
+    launch, impact, rise = _maximum_ordered_drop_3d(-np.asarray(values))
+    return launch, impact, rise
+
+
 def _trajectory_geometry_3d(
     points: np.ndarray,
 ) -> tuple[float, float, float, float]:
@@ -1077,73 +1157,298 @@ def classify_punch_3d(
 ) -> ClassifiedPunch3D:
     if len(event.samples) < 2:
         raise ValueError("3D punch event must contain at least two samples")
+
     side = event.side
+    wrist_name = side_landmark(side, "wrist")
+    elbow_name = side_landmark(side, "elbow")
+
+    # Keep the guard orientation and scale fixed for the complete event. During
+    # a hook the shoulders rotate; recomputing the body axes every frame rotates
+    # away the very XZ arc that we need to measure. We still subtract each
+    # frame's current shoulder centre so a torso step/lean is not fist travel.
+    guard_frame = body_frame_3d(event.samples[0])
+
+    def fixed_body_point(sample: PoseSample3D, landmark_name: str) -> np.ndarray:
+        relative = (
+            sample.landmarks[landmark_name].xyz - shoulder_center_3d(sample)
+        )
+        return np.asarray(
+            (
+                np.dot(relative, guard_frame.right_axis),
+                np.dot(relative, guard_frame.up_axis),
+                np.dot(relative, guard_frame.forward_axis),
+            ),
+            dtype=np.float64,
+        ) / guard_frame.shoulder_width_mm
+
     body_points = np.asarray(
-        [wrist_in_body_frame(sample, side) for sample in event.samples],
+        [fixed_body_point(sample, wrist_name) for sample in event.samples],
+        dtype=np.float64,
+    )
+    elbow_points = np.asarray(
+        [fixed_body_point(sample, elbow_name) for sample in event.samples],
         dtype=np.float64,
     )
     elbow_angles_all = np.asarray(
         [elbow_angle_3d(sample, side) for sample in event.samples],
         dtype=np.float64,
     )
-    displacement_all = np.linalg.norm(body_points - body_points[0], axis=1)
-    forward_all = body_points[:, 2] - body_points[0, 2]
-    extension_all = np.maximum(elbow_angles_all - elbow_angles_all[0], 0.0)
 
-    peak_fraction = float(np.clip(settings.get("impact_peak_fraction", 0.92), 0.5, 1.0))
-    impact_index = max(
+    smoothing_window = max(
+        int(settings.get("trajectory_smoothing_window", 3)),
+        1,
+    )
+    if smoothing_window % 2 == 0:
+        smoothing_window += 1
+    smoothed_points = _median_smooth_points_3d(body_points, smoothing_window)
+    smoothed_elbow_angles = _median_smooth_1d_3d(
+        elbow_angles_all,
+        smoothing_window,
+        repair_endpoints=False,
+    )
+    # Four-frame unit tests and very-low-FPS captures do not contain enough
+    # temporal neighbors. Normal camera events use the robust 3-frame path.
+    use_smoothed = len(event.samples) >= max(smoothing_window + 2, 5)
+    classification_points = smoothed_points if use_smoothed else body_points
+    classification_elbows = (
+        smoothed_elbow_angles if use_smoothed else elbow_angles_all
+    )
+
+    displacement_all = np.linalg.norm(
+        classification_points - classification_points[0],
+        axis=1,
+    )
+    forward_all = classification_points[:, 2] - classification_points[0, 2]
+    extension_all = np.maximum(
+        classification_elbows - classification_elbows[0],
+        0.0,
+    )
+
+    peak_fraction = float(
+        np.clip(settings.get("impact_peak_fraction", 0.92), 0.5, 1.0)
+    )
+    generic_impact_index = max(
         _first_near_peak_index(displacement_all, peak_fraction),
         _first_near_peak_index(np.maximum(forward_all, 0.0), peak_fraction),
         _first_near_peak_index(extension_all, peak_fraction),
     )
-    impact_index = min(max(impact_index, 1), len(event.samples) - 1)
+    generic_impact_index = min(
+        max(generic_impact_index, 1),
+        len(event.samples) - 1,
+    )
 
-    points = body_points[: impact_index + 1]
+    points = classification_points[: generic_impact_index + 1]
     deltas = points - points[0]
-    elbow_angles = elbow_angles_all[: impact_index + 1]
+    elbow_angles = classification_elbows[: generic_impact_index + 1]
     distances = np.linalg.norm(deltas, axis=1)
     peak_travel = max(float(np.max(distances)), 1e-6)
     lateral_travel = float(np.max(np.abs(deltas[:, 0])))
     upward_travel = float(np.max(deltas[:, 1]))
     forward_travel = float(np.max(deltas[:, 2]))
     lateral_ratio = lateral_travel / peak_travel
-    upward_ratio = max(upward_travel, 0.0) / peak_travel
     forward_ratio = max(forward_travel, 0.0) / peak_travel
     outward_sign = 1.0 if side == "right" else -1.0
-    outward_positions = outward_sign * deltas[:, 0]
-    outward_peak_index = int(np.argmax(outward_positions))
-    outward_travel = max(float(outward_positions[outward_peak_index]), 0.0)
-    inward_return = max(
-        outward_travel - float(outward_positions[-1]),
+    legacy_outward_positions = outward_sign * (
+        body_points[:, 0] - body_points[0, 0]
+    )
+    legacy_outward_peak_index = int(np.argmax(legacy_outward_positions))
+    legacy_outward_travel = max(
+        float(legacy_outward_positions[legacy_outward_peak_index]),
+        0.0,
+    )
+    legacy_inward_return = max(
+        legacy_outward_travel - float(legacy_outward_positions[-1]),
         0.0,
     )
     path_length, direct_travel, linearity, curvature = _trajectory_geometry_3d(points)
     max_elbow = float(np.max(elbow_angles))
     extension_gain = max_elbow - float(elbow_angles[0])
-    impact_elbow = float(elbow_angles[-1])
+    generic_impact_elbow = float(elbow_angles[-1])
 
-    impact_sample = event.samples[impact_index]
-    impact_frame = body_frame_3d(impact_sample)
-    wrist = impact_sample.landmarks[side_landmark(side, "wrist")].xyz
-    elbow = impact_sample.landmarks[side_landmark(side, "elbow")].xyz
-    wrist_above_elbow = float(
-        np.dot(wrist - elbow, impact_frame.up_axis)
-        / impact_frame.shoulder_width_mm
+    wrist_above_elbow_all = body_points[:, 1] - elbow_points[:, 1]
+
+    # Hook phase: locate the largest ordered outside chamber -> inward strike
+    # on the complete event. Side-sign mirroring makes left/right symmetric.
+    hook_phase_points = smoothed_points if use_smoothed else body_points
+    hook_phase_elbows = (
+        smoothed_elbow_angles if use_smoothed else elbow_angles_all
+    )
+    hook_outward_positions = outward_sign * (
+        hook_phase_points[:, 0] - hook_phase_points[0, 0]
+    )
+    (
+        hook_launch_index,
+        hook_terminal_index,
+        hook_inward_sweep,
+    ) = _maximum_ordered_drop_3d(hook_outward_positions)
+    hook_outward_excursion = max(
+        float(hook_outward_positions[hook_launch_index]),
+        0.0,
+    )
+    hook_impact_fraction = float(
+        np.clip(settings.get("hook_impact_peak_fraction", 0.92), 0.50, 1.0)
+    )
+    hook_impact_index = hook_terminal_index
+    if hook_inward_sweep > 1e-9 and hook_terminal_index > hook_launch_index:
+        target = (
+            hook_outward_positions[hook_launch_index]
+            - hook_inward_sweep * hook_impact_fraction
+        )
+        candidates = np.flatnonzero(
+            hook_outward_positions[
+                hook_launch_index : hook_terminal_index + 1
+            ]
+            <= target
+        )
+        if candidates.size:
+            hook_impact_index = hook_launch_index + int(candidates[0])
+
+    hook_outward_steps_values = np.diff(
+        hook_outward_positions[: hook_launch_index + 1]
+    )
+    hook_inward_steps_values = -np.diff(
+        hook_outward_positions[hook_launch_index : hook_impact_index + 1]
+    )
+    hook_outward_steps = int(
+        np.count_nonzero(hook_outward_steps_values > 1e-4)
+    )
+    hook_inward_steps = int(
+        np.count_nonzero(hook_inward_steps_values > 1e-4)
+    )
+    hook_outward_variation = float(np.sum(np.abs(hook_outward_steps_values)))
+    hook_inward_variation = float(np.sum(np.abs(hook_inward_steps_values)))
+    hook_selected_inward_sweep = max(
+        float(
+            hook_outward_positions[hook_launch_index]
+            - hook_outward_positions[hook_impact_index]
+        ),
+        0.0,
+    )
+    hook_outward_consistency = (
+        float(np.clip(hook_outward_excursion / hook_outward_variation, 0.0, 1.0))
+        if hook_outward_variation > 1e-9
+        else 0.0
+    )
+    hook_inward_consistency = (
+        float(
+            np.clip(
+                hook_selected_inward_sweep / hook_inward_variation,
+                0.0,
+                1.0,
+            )
+        )
+        if hook_inward_variation > 1e-9
+        else 0.0
+    )
+    hook_path = hook_phase_points[hook_launch_index : hook_impact_index + 1]
+    (
+        hook_path_length,
+        hook_direct_travel,
+        hook_path_linearity,
+        hook_path_curvature,
+    ) = _trajectory_geometry_3d(hook_path)
+    hook_vertical_travel = (
+        float(np.ptp(hook_path[:, 1])) if len(hook_path) else 0.0
+    )
+    hook_horizontal_travel = (
+        float(
+            np.max(
+                np.linalg.norm(
+                    hook_path[:, (0, 2)] - hook_path[0, (0, 2)],
+                    axis=1,
+                )
+            )
+        )
+        if len(hook_path)
+        else 0.0
+    )
+    hook_outward_vector_xz = (
+        hook_phase_points[hook_launch_index, (0, 2)]
+        - hook_phase_points[0, (0, 2)]
+    )
+    hook_inward_vector_xz = (
+        hook_phase_points[hook_impact_index, (0, 2)]
+        - hook_phase_points[hook_launch_index, (0, 2)]
+    )
+    outward_norm = float(np.linalg.norm(hook_outward_vector_xz))
+    inward_norm = float(np.linalg.norm(hook_inward_vector_xz))
+    hook_turn_angle = 0.0
+    if outward_norm > 1e-9 and inward_norm > 1e-9:
+        hook_turn_angle = float(
+            np.degrees(
+                np.arccos(
+                    np.clip(
+                        np.dot(hook_outward_vector_xz, hook_inward_vector_xz)
+                        / (outward_norm * inward_norm),
+                        -1.0,
+                        1.0,
+                    )
+                )
+            )
+        )
+    hook_extension_gain = max(
+        float(
+            np.max(
+                hook_phase_elbows[hook_launch_index : hook_impact_index + 1]
+            )
+            - hook_phase_elbows[hook_launch_index]
+        ),
+        0.0,
+    )
+    hook_impact_elbow = float(hook_phase_elbows[hook_impact_index])
+
+    # Uppercut phase: locate the ordered low chamber -> upward apex over the
+    # complete event so the downward preparation cannot become the hit point.
+    uppercut_phase_points = smoothed_points if use_smoothed else body_points
+    (
+        uppercut_launch_index,
+        uppercut_apex_index,
+        uppercut_rise,
+    ) = _maximum_ordered_rise_3d(uppercut_phase_points[:, 1])
+    uppercut_impact_fraction = float(
+        np.clip(
+            settings.get("uppercut_impact_peak_fraction", 0.95),
+            0.50,
+            1.0,
+        )
+    )
+    uppercut_impact_index = uppercut_apex_index
+    if uppercut_rise > 1e-9 and uppercut_apex_index > uppercut_launch_index:
+        target = (
+            uppercut_phase_points[uppercut_launch_index, 1]
+            + uppercut_rise * uppercut_impact_fraction
+        )
+        candidates = np.flatnonzero(
+            uppercut_phase_points[
+                uppercut_launch_index : uppercut_apex_index + 1,
+                1,
+            ]
+            >= target
+        )
+        if candidates.size:
+            uppercut_impact_index = uppercut_launch_index + int(candidates[0])
+    uppercut_path = uppercut_phase_points[
+        uppercut_launch_index : uppercut_impact_index + 1
+    ]
+    uppercut_horizontal_travel = (
+        float(
+            np.max(
+                np.linalg.norm(
+                    uppercut_path[:, (0, 2)] - uppercut_path[0, (0, 2)],
+                    axis=1,
+                )
+            )
+        )
+        if len(uppercut_path)
+        else 0.0
+    )
+    uppercut_impact_elbow = float(
+        classification_elbows[uppercut_impact_index]
     )
 
-    time_values = np.asarray(
-        [sample.stamp_s for sample in event.samples[: impact_index + 1]],
-        dtype=np.float64,
-    )
-    velocities: list[np.ndarray] = []
-    for index in range(1, len(points)):
-        dt = time_values[index] - time_values[index - 1]
-        if 1e-5 < dt <= 0.75:
-            velocities.append((points[index] - points[index - 1]) / dt)
-    velocity_array = np.asarray(velocities) if velocities else np.zeros((1, 3))
-    peak_forward_speed = float(np.max(velocity_array[:, 2]))
-    peak_lateral_speed = float(np.max(np.abs(velocity_array[:, 0])))
-    peak_upward_speed = float(np.max(velocity_array[:, 1]))
+    # Straight keeps the generic reach/forward/extension impact, but unlike a
+    # Hook/Uppercut it has no later direction-changing strike phase.
+    straight_impact_index = generic_impact_index
 
     straight_forward_min = float(settings.get("straight_forward_ratio_min", 0.42))
     straight_linearity_min = float(settings.get("straight_linearity_min", 0.84))
@@ -1154,14 +1459,119 @@ def classify_punch_3d(
     hook_lateral_min = float(settings.get("hook_lateral_ratio_min", 0.42))
     hook_curvature_min = float(settings.get("hook_curvature_min", 0.16))
     hook_elbow_max = float(settings.get("hook_elbow_angle_max", 158.0))
-    hook_outward_min = float(settings.get("hook_outward_travel_min", 0.12))
-    hook_inward_min = float(settings.get("hook_inward_return_min", 0.08))
+    hook_outward_min = float(
+        settings.get(
+            "hook_min_outward_chamber_ratio",
+            settings.get("hook_outward_travel_min", 0.12),
+        )
+    )
+    hook_inward_min = float(
+        settings.get(
+            "hook_min_ordered_inward_ratio",
+            settings.get("hook_inward_return_min", 0.35),
+        )
+    )
+    hook_min_outward_steps = max(
+        int(settings.get("hook_min_outward_steps", 2)),
+        1,
+    )
+    hook_min_inward_steps = max(
+        int(settings.get("hook_min_inward_steps", 2)),
+        1,
+    )
+    hook_min_outward_consistency = float(
+        settings.get("hook_min_outward_consistency", 0.65)
+    )
+    hook_min_inward_consistency = float(
+        settings.get("hook_min_inward_consistency", 0.60)
+    )
+    hook_turn_min = float(settings.get("hook_min_turn_angle_deg", 70.0))
+    hook_horizontal_dominance = float(
+        settings.get("hook_horizontal_dominance", 1.10)
+    )
+    hook_ordered_elbow_max = float(
+        settings.get("hook_ordered_max_elbow_angle", 150.0)
+    )
+    hook_extension_max = float(
+        settings.get("hook_max_extension_gain_deg", 25.0)
+    )
+    hook_contact_min = float(
+        settings.get("hook_arc_contact_min_inward_ratio", 0.25)
+    )
 
     upper_upward_min = float(settings.get("uppercut_upward_ratio_min", 0.42))
     upper_upward_travel_min = float(
-        settings.get("uppercut_upward_travel_min", 0.18)
+        settings.get(
+            "uppercut_min_upward_ratio",
+            settings.get("uppercut_upward_travel_min", 0.22),
+        )
     )
-    upper_elbow_max = float(settings.get("uppercut_elbow_angle_max", 158.0))
+    upper_elbow_max = float(
+        settings.get(
+            "uppercut_max_elbow_angle",
+            settings.get("uppercut_elbow_angle_max", 155.0),
+        )
+    )
+    upper_vertical_dominance = float(
+        settings.get("uppercut_vertical_dominance", 1.05)
+    )
+    upper_wrist_above_min = float(
+        settings.get("uppercut_min_wrist_above_elbow_ratio", 0.03)
+    )
+
+    hook_ordered_gate = (
+        hook_outward_excursion >= hook_outward_min
+        and hook_inward_sweep >= hook_inward_min
+        and hook_outward_steps >= hook_min_outward_steps
+        and hook_inward_steps >= hook_min_inward_steps
+        and hook_outward_consistency >= hook_min_outward_consistency
+        and hook_inward_consistency >= hook_min_inward_consistency
+        and hook_turn_angle >= hook_turn_min
+        and hook_horizontal_travel
+        >= hook_vertical_travel * hook_horizontal_dominance
+        and hook_impact_elbow <= hook_ordered_elbow_max
+        and hook_extension_gain <= hook_extension_max
+    )
+    hook_curve_gate = (
+        lateral_ratio >= hook_lateral_min
+        and curvature >= hook_curvature_min
+        and generic_impact_elbow <= hook_elbow_max
+        and lateral_travel >= max(upward_travel, 0.0) * 0.90
+        and extension_gain <= hook_extension_max
+    )
+
+    uppercut_component_ratio = uppercut_rise / max(
+        float(np.hypot(uppercut_rise, uppercut_horizontal_travel)),
+        1e-6,
+    )
+    uppercut_gate = (
+        uppercut_rise >= upper_upward_travel_min
+        and uppercut_component_ratio >= upper_upward_min
+        and uppercut_rise
+        >= uppercut_horizontal_travel * upper_vertical_dominance
+        and uppercut_impact_elbow <= upper_elbow_max
+        and wrist_above_elbow_all[uppercut_impact_index]
+        >= upper_wrist_above_min
+    )
+
+    straight_gate = (
+        forward_ratio >= straight_forward_min
+        and linearity >= straight_linearity_min
+        and curvature <= straight_curvature_max
+        and max_elbow >= straight_elbow_min
+        and extension_gain >= straight_extension_min
+    )
+    # A deliberately wide straight can have a larger X component, but it is
+    # still direct, forward-moving and extends instead of turning back inward.
+    straight_wide_gate = (
+        forward_travel >= straight_forward_min * 0.75
+        and forward_ratio >= straight_forward_min * 0.80
+        and linearity >= straight_linearity_min
+        and curvature <= straight_curvature_max
+        and max_elbow >= straight_elbow_min
+        and extension_gain >= straight_extension_min
+        and not hook_ordered_gate
+    )
 
     straight_score = (
         0.32 * _ramp(forward_ratio, straight_forward_min * 0.65, 0.75)
@@ -1173,43 +1583,25 @@ def classify_punch_3d(
     hook_score = (
         0.26 * _ramp(lateral_ratio, hook_lateral_min * 0.65, 0.80)
         + 0.22 * _ramp(curvature, hook_curvature_min * 0.65, 0.45)
-        + 0.14 * (1.0 - _ramp(impact_elbow, hook_elbow_max - 35.0, 175.0))
+        + 0.14 * (1.0 - _ramp(hook_impact_elbow, hook_elbow_max - 35.0, 175.0))
         + 0.12 * _ramp(lateral_travel, 0.12, 0.65)
-        + 0.16 * _ramp(outward_travel, hook_outward_min * 0.65, 0.45)
-        + 0.10 * _ramp(inward_return, hook_inward_min * 0.65, 0.35)
+        + 0.12 * _ramp(hook_outward_excursion, hook_outward_min * 0.65, 0.45)
+        + 0.10 * _ramp(hook_inward_sweep, hook_inward_min * 0.65, 0.55)
+        + 0.04 * _ramp(hook_turn_angle, hook_turn_min * 0.75, 150.0)
     )
     uppercut_score = (
-        0.38 * _ramp(upward_ratio, upper_upward_min * 0.65, 0.80)
-        + 0.24 * _ramp(upward_travel, upper_upward_travel_min * 0.65, 0.60)
-        + 0.14 * _ramp(wrist_above_elbow, 0.0, 0.40)
-        + 0.14 * (1.0 - _ramp(impact_elbow, upper_elbow_max - 35.0, 175.0))
+        0.38 * _ramp(uppercut_component_ratio, upper_upward_min * 0.65, 0.80)
+        + 0.24 * _ramp(uppercut_rise, upper_upward_travel_min * 0.65, 0.60)
+        + 0.14 * _ramp(
+            wrist_above_elbow_all[uppercut_impact_index], 0.0, 0.40
+        )
+        + 0.14 * (1.0 - _ramp(uppercut_impact_elbow, upper_elbow_max - 35.0, 175.0))
         + 0.10 * _ramp(forward_ratio, 0.10, 0.55)
     )
 
-    straight_gate = (
-        forward_ratio >= straight_forward_min
-        and linearity >= straight_linearity_min
-        and curvature <= straight_curvature_max
-        and max_elbow >= straight_elbow_min
-        and extension_gain >= straight_extension_min
-    )
-    hook_gate = (
-        lateral_ratio >= hook_lateral_min
-        and curvature >= hook_curvature_min
-        and impact_elbow <= hook_elbow_max
-        and outward_travel >= hook_outward_min
-        and inward_return >= hook_inward_min
-        and lateral_travel >= max(upward_travel, 0.0) * 0.90
-    )
-    uppercut_gate = (
-        upward_ratio >= upper_upward_min
-        and upward_travel >= upper_upward_travel_min
-        and impact_elbow <= upper_elbow_max
-        and upward_travel >= lateral_travel * 0.90
-    )
-    if not straight_gate:
+    if not (straight_gate or straight_wide_gate):
         straight_score *= 0.72
-    if not hook_gate:
+    if not (hook_ordered_gate or hook_curve_gate):
         hook_score *= 0.72
     if not uppercut_gate:
         uppercut_score *= 0.72
@@ -1219,35 +1611,140 @@ def classify_punch_3d(
         "hook": float(np.clip(hook_score, 0.0, 1.0)),
         "uppercut": float(np.clip(uppercut_score, 0.0, 1.0)),
     }
-    ordered = sorted(candidate_scores.items(), key=lambda item: item[1], reverse=True)
-    punch_type, winner = ordered[0]
-    margin = winner - ordered[1][1]
-    confidence = float(np.clip(0.40 + 0.45 * winner + 0.60 * margin, 0.0, 0.95))
-    reasons = {
-        "straight": "straight_3d_forward_linear_vector",
-        "hook": "hook_3d_lateral_curved_vector",
-        "uppercut": "uppercut_3d_upward_vector",
-    }
+    # Deterministic evidence priority mirrors the stable 2D implementation.
+    # A complete Hook turn wins first, then a vertical low-to-apex Uppercut,
+    # then a forward/direct extending Straight, followed by a curved Hook.
+    if hook_ordered_gate:
+        punch_type = "hook"
+        impact_index = hook_impact_index
+        classification_reason = "hook_3d_outside_to_inside_contact"
+    elif uppercut_gate:
+        punch_type = "uppercut"
+        impact_index = uppercut_impact_index
+        classification_reason = "uppercut_3d_low_to_apex_contact"
+    elif straight_gate or straight_wide_gate:
+        punch_type = "straight"
+        impact_index = straight_impact_index
+        classification_reason = "straight_3d_forward_linear_extension"
+    elif hook_curve_gate:
+        punch_type = "hook"
+        impact_index = (
+            hook_impact_index
+            if hook_inward_sweep >= hook_contact_min
+            else generic_impact_index
+        )
+        classification_reason = "hook_3d_lateral_curved_vector"
+    else:
+        ordered = sorted(
+            candidate_scores.items(),
+            key=lambda item: (-item[1], ("straight", "hook", "uppercut").index(item[0])),
+        )
+        punch_type = ordered[0][0]
+        impact_index = {
+            "straight": straight_impact_index,
+            "hook": (
+                hook_impact_index
+                if hook_inward_sweep >= hook_contact_min
+                else generic_impact_index
+            ),
+            "uppercut": uppercut_impact_index,
+        }[punch_type]
+        classification_reason = {
+            "straight": "straight_3d_low_evidence_fallback",
+            "hook": "hook_3d_curved_score_fallback",
+            "uppercut": "uppercut_3d_vertical_score_fallback",
+        }[punch_type]
+
+    impact_index = min(max(int(impact_index), 1), len(event.samples) - 1)
+    impact_sample = event.samples[impact_index]
+    impact_elbow = float(classification_elbows[impact_index])
+    wrist_above_elbow = float(wrist_above_elbow_all[impact_index])
+    winner = candidate_scores[punch_type]
+    runner_up = max(
+        score for name, score in candidate_scores.items() if name != punch_type
+    )
+    margin = max(winner - runner_up, 0.0)
+    confidence = float(
+        np.clip(0.40 + 0.45 * winner + 0.60 * margin, 0.0, 0.95)
+    )
+
+    # Public form features must describe the selected class contact, not the
+    # earlier generic chamber. This is especially important for scoring an
+    # Uppercut's rise and a Hook's inward strike.
+    selected_points = classification_points[: impact_index + 1]
+    selected_deltas = selected_points - selected_points[0]
+    selected_distances = np.linalg.norm(selected_deltas, axis=1)
+    selected_peak_travel = max(float(np.max(selected_distances)), 1e-6)
+    selected_lateral_travel = float(np.max(np.abs(selected_deltas[:, 0])))
+    selected_upward_travel = max(float(np.max(selected_deltas[:, 1])), 0.0)
+    selected_forward_travel = max(float(np.max(selected_deltas[:, 2])), 0.0)
+    selected_lateral_ratio = selected_lateral_travel / selected_peak_travel
+    selected_upward_ratio = selected_upward_travel / selected_peak_travel
+    selected_forward_ratio = selected_forward_travel / selected_peak_travel
+    (
+        selected_path_length,
+        selected_direct_travel,
+        selected_linearity,
+        selected_curvature,
+    ) = _trajectory_geometry_3d(selected_points)
+    selected_elbows = classification_elbows[: impact_index + 1]
+    selected_max_elbow = float(np.max(selected_elbows))
+    selected_extension_gain = selected_max_elbow - float(selected_elbows[0])
+
+    if punch_type == "hook":
+        hook_strike_vector = (
+            hook_phase_points[hook_impact_index]
+            - hook_phase_points[hook_launch_index]
+        )
+        selected_lateral_ratio = abs(float(hook_strike_vector[0])) / max(
+            float(np.linalg.norm(hook_strike_vector)),
+            1e-6,
+        )
+    elif punch_type == "uppercut":
+        selected_upward_travel = uppercut_rise
+        selected_upward_ratio = uppercut_component_ratio
+
+    selected_time_values = np.asarray(
+        [sample.stamp_s for sample in event.samples[: impact_index + 1]],
+        dtype=np.float64,
+    )
+    selected_velocities: list[np.ndarray] = []
+    for index in range(1, len(selected_points)):
+        dt = selected_time_values[index] - selected_time_values[index - 1]
+        if 1e-5 < dt <= 0.75:
+            selected_velocities.append(
+                (selected_points[index] - selected_points[index - 1]) / dt
+            )
+    selected_velocity_array = (
+        np.asarray(selected_velocities)
+        if selected_velocities
+        else np.zeros((1, 3))
+    )
+    peak_forward_speed = float(np.max(selected_velocity_array[:, 2]))
+    peak_lateral_speed = float(np.max(np.abs(selected_velocity_array[:, 0])))
+    peak_upward_speed = float(np.max(selected_velocity_array[:, 1]))
 
     motion_features = {
-        "delta_x_lateral_ratio": float(deltas[-1, 0]),
-        "delta_y_up_ratio": float(deltas[-1, 1]),
-        "delta_z_forward_ratio": float(deltas[-1, 2]),
-        "lateral_travel_ratio": lateral_travel,
-        "hook_outward_travel_ratio": outward_travel,
-        "hook_inward_return_ratio": inward_return,
-        "upward_travel_ratio": upward_travel,
-        "forward_travel_ratio": forward_travel,
-        "lateral_component_ratio": lateral_ratio,
-        "upward_component_ratio": upward_ratio,
-        "forward_component_ratio": forward_ratio,
-        "path_length_ratio": path_length,
-        "direct_travel_ratio": direct_travel,
-        "path_linearity": linearity,
-        "path_curvature_ratio": curvature,
-        "max_elbow_angle_deg": max_elbow,
+        "delta_x_lateral_ratio": float(selected_deltas[-1, 0]),
+        "delta_y_up_ratio": float(selected_deltas[-1, 1]),
+        "delta_z_forward_ratio": float(selected_deltas[-1, 2]),
+        "lateral_travel_ratio": selected_lateral_travel,
+        # Preserve these original public feature keys as raw full-event travel;
+        # the robust ordered values are exposed separately below.
+        "hook_outward_travel_ratio": legacy_outward_travel,
+        "hook_inward_return_ratio": legacy_inward_return,
+        "upward_travel_ratio": selected_upward_travel,
+        "forward_travel_ratio": selected_forward_travel,
+        "lateral_component_ratio": selected_lateral_ratio,
+        "upward_component_ratio": selected_upward_ratio,
+        "forward_component_ratio": selected_forward_ratio,
+        "path_length_ratio": selected_path_length,
+        "direct_travel_ratio": selected_direct_travel,
+        "path_linearity": selected_linearity,
+        "path_curvature_ratio": selected_curvature,
+        "max_elbow_angle_deg": selected_max_elbow,
         "impact_elbow_angle_deg": impact_elbow,
-        "extension_gain_deg": extension_gain,
+        "extension_gain_deg": selected_extension_gain,
         "wrist_above_elbow_ratio": wrist_above_elbow,
         "peak_forward_speed_ratio_s": peak_forward_speed,
         "peak_lateral_speed_ratio_s": peak_lateral_speed,
@@ -1256,6 +1753,36 @@ def classify_punch_3d(
         "hook_candidate_score": candidate_scores["hook"],
         "uppercut_candidate_score": candidate_scores["uppercut"],
         "classification_margin": margin,
+        "body_frame_guard_locked": 1.0,
+        "trajectory_smoothing_window": float(smoothing_window),
+        "generic_impact_sample_index": float(generic_impact_index),
+        "hook_ordered_sweep_pass": float(hook_ordered_gate),
+        "hook_curve_pass": float(hook_curve_gate),
+        "hook_launch_sample_index": float(hook_launch_index),
+        "hook_impact_sample_index": float(hook_impact_index),
+        "hook_outward_excursion_ratio": hook_outward_excursion,
+        "hook_inward_sweep_ratio": hook_inward_sweep,
+        "hook_selected_inward_sweep_ratio": hook_selected_inward_sweep,
+        "hook_outward_steps": float(hook_outward_steps),
+        "hook_inward_steps": float(hook_inward_steps),
+        "hook_outward_consistency": hook_outward_consistency,
+        "hook_inward_consistency": hook_inward_consistency,
+        "hook_turn_angle_deg": hook_turn_angle,
+        "hook_horizontal_travel_ratio": hook_horizontal_travel,
+        "hook_vertical_travel_ratio": hook_vertical_travel,
+        "hook_extension_gain_deg": hook_extension_gain,
+        "hook_ordered_path_length_ratio": hook_path_length,
+        "hook_ordered_direct_travel_ratio": hook_direct_travel,
+        "hook_ordered_path_linearity": hook_path_linearity,
+        "hook_ordered_path_curvature_ratio": hook_path_curvature,
+        "uppercut_strict_pass": float(uppercut_gate),
+        "uppercut_launch_sample_index": float(uppercut_launch_index),
+        "uppercut_impact_sample_index": float(uppercut_impact_index),
+        "uppercut_rise_ratio": uppercut_rise,
+        "uppercut_horizontal_travel_ratio": uppercut_horizontal_travel,
+        "uppercut_vertical_component_ratio": uppercut_component_ratio,
+        "straight_strict_pass": float(straight_gate),
+        "straight_wide_pass": float(straight_wide_gate),
         "impact_sample_index": float(impact_index),
         "event_sample_count": float(len(event.samples)),
         "recovery_frames_ignored": float(len(event.samples) - impact_index - 1),
@@ -1273,7 +1800,7 @@ def classify_punch_3d(
         confidence=confidence,
         key_sample=impact_sample,
         motion_features=motion_features,
-        classification_reason=reasons[punch_type],
+        classification_reason=classification_reason,
         candidate_scores=candidate_scores,
     )
 

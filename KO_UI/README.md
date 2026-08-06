@@ -158,7 +158,9 @@ STOPPING_FOR_ACTION
 
 ## 비전
 
-비전은 카메라 오류가 UI나 로봇을 종료시키지 않도록 기본 실행에서 분리되어 있습니다.
+통합 펀치 분석은 최상위 `vision/`의 정면 RealSense + 좌·우 C270
+YOLO11n-Pose 3D 런타임을 사용합니다. 이 UI 폴더에 남아 있는 단일 웹캠
+MediaPipe 펀치 MVP는 참고용이며 통합 실행에서는 사용하지 않습니다.
 
 사용자 리치 측정에 사용하는 MediaPipe Tasks Vision `0.10.14`와 Pose Landmarker
 Lite 모델은 `static/vendor/mediapipe/`에 포함되어 있습니다. 리치 측정은 인터넷이나
@@ -168,9 +170,22 @@ Lite 모델은 `static/vendor/mediapipe/`에 포함되어 있습니다. 리치 �
 지점을 사용합니다. 좌·우 펀치 리치는 어깨→팔꿈치→손목 길이에 손목부터 주먹
 앞면까지의 고정 보정값 9cm를 별도로 더합니다.
 
+UI·ROS 비전 브리지·3D 런타임은 통합본 루트에서 함께 실행하세요.
+
 ```bash
-./run_vision_optional.sh --ros-args -p camera_index:=0
+cd ..
+./run_integrated.sh
 ```
+
+로봇 없이 UI와 3D 비전만 확인하려면:
+
+```bash
+cd ..
+KO_WITHOUT_ROBOT=1 ./run_integrated.sh
+```
+
+`ui/run_vision_optional.sh`를 직접 실행하는 방식은 내부 호환용입니다. 특히 예전의
+`camera_index` 단일 웹캠 명령은 현재 3카메라 3D 런타임에 적용되지 않습니다.
 
 ## ROS 환경 점검
 

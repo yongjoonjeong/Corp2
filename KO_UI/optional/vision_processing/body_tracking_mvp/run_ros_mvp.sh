@@ -1,26 +1,19 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INTEGRATED_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+DEFAULT_VISION_RUNNER="$INTEGRATED_ROOT/vision/run_ros_3d_mvp.sh"
+if [[ ! -x "$DEFAULT_VISION_RUNNER" ]]; then
+    DEFAULT_VISION_RUNNER="$INTEGRATED_ROOT/sandbag_robot_world_calibration/run_ros_3d_mvp.sh"
+fi
+VISION_RUNNER="${KO_3D_VISION_RUNNER:-$DEFAULT_VISION_RUNNER}"
 
-if [[ ! -f /opt/ros/humble/setup.bash ]]; then
-    echo "ROS 2 Humble was not found at /opt/ros/humble." >&2
+if [[ ! -x "$VISION_RUNNER" ]]; then
+    echo "[ERROR] Integrated 3D vision runner was not found or is not executable:" >&2
+    echo "        $VISION_RUNNER" >&2
+    echo "Run the integrated vision setup first: $INTEGRATED_ROOT/vision/setup_3d.sh" >&2
     exit 1
 fi
 
-if [[ ! -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
-    echo "Virtual environment is missing. Run: $SCRIPT_DIR/setup.sh" >&2
-    exit 1
-fi
-
-source /opt/ros/humble/setup.bash
-set -u
-
-if ! "$SCRIPT_DIR/.venv/bin/python" -c \
-    "import cv2, mediapipe, numpy, yaml, PIL" >/dev/null 2>&1; then
-    echo "Python dependencies are missing. Run: $SCRIPT_DIR/setup.sh" >&2
-    exit 1
-fi
-
-exec "$SCRIPT_DIR/.venv/bin/python" \
-    "$SCRIPT_DIR/webcam_punch_feedback_node.py" "$@"
+exec "$VISION_RUNNER" "$@"

@@ -69,6 +69,27 @@ def _detection(
     )
 
 
+def _scaled_bbox(
+    detection: YoloPoseDetection,
+    scale: float,
+) -> YoloPoseDetection:
+    x1, y1, x2, y2 = detection.bbox_xyxy
+    center_x = (x1 + x2) * 0.5
+    center_y = (y1 + y2) * 0.5
+    half_width = (x2 - x1) * 0.5 * scale
+    half_height = (y2 - y1) * 0.5 * scale
+    return YoloPoseDetection(
+        bbox_xyxy=(
+            center_x - half_width,
+            center_y - half_height,
+            center_x + half_width,
+            center_y + half_height,
+        ),
+        detection_confidence=detection.detection_confidence,
+        landmarks=detection.landmarks,
+    )
+
+
 def test_parse_yolo_pose_result_maps_required_coco_keypoints() -> None:
     xy = np.zeros((1, 17, 2), dtype=np.float32)
     confidence = np.zeros((1, 17), dtype=np.float32)
@@ -125,6 +146,320 @@ def test_selector_uses_calibration_and_keeps_the_boxer_lock() -> None:
         480,
     )
     assert all(selected_again[camera] is boxer[camera] for camera in CAMERA_ORDER)
+
+
+def test_selector_default_top_k_bounds_cartesian_association_work() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    offsets = (-800.0, -450.0, 0.0, 450.0, 800.0)
+    candidates = {
+        camera: tuple(
+            reversed(
+                [
+                    boxer[camera]
+                    if offset == 0.0
+                    else _detection(calibration, camera, offset)
+                    for offset in offsets
+                ]
+            )
+        )
+        for camera in CAMERA_ORDER
+    }
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+    )
+    original_association_score = selector._association_score
+    association_calls = []
+
+    def counted_association_score(selected, calibration, width, height):
+        association_calls.append(selected)
+        return original_association_score(selected, calibration, width, height)
+
+    selector._association_score = counted_association_score
+
+    selected = selector.select(candidates, calibration, 640, 480)
+
+    assert selector.candidate_top_k == 3
+    assert len(association_calls) == 3**3
+    assert all(selected[camera] is boxer[camera] for camera in CAMERA_ORDER)
+
+
+def test_selector_top_k_ranking_is_independent_of_detector_order() -> None:
+    calibration = _calibration()
+    detections = tuple(
+        _detection(calibration, "front", offset)
+        for offset in (-800.0, -450.0, 0.0, 450.0, 800.0)
+    )
+    selector = CalibratedPoseSelector(keypoint_confidence=0.35)
+
+    ranked_forward = selector._rank_and_prune_candidates(
+        "front", detections, 640, 480
+    )
+    ranked_reverse = selector._rank_and_prune_candidates(
+        "front", tuple(reversed(detections)), 640, 480
+    )
+
+    assert len(ranked_forward) == 3
+    assert all(
+        forward is reverse
+        for forward, reverse in zip(ranked_forward, ranked_reverse)
+    )
+
+
+def test_locked_selector_prunes_center_and_area_outliers_before_product() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+        maximum_temporal_center_jump=0.20,
+        maximum_temporal_scale_log_change=0.50,
+    )
+    acquired = selector.select(
+        {camera: (boxer[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+    assert all(acquired[camera] is boxer[camera] for camera in CAMERA_ORDER)
+
+    far = {
+        camera: _detection(calibration, camera, 650.0) for camera in CAMERA_ORDER
+    }
+    wrong_scale = {
+        camera: _scaled_bbox(boxer[camera], 3.0) for camera in CAMERA_ORDER
+    }
+    original_association_score = selector._association_score
+    association_calls = []
+
+    def counted_association_score(selected, calibration, width, height):
+        association_calls.append(selected)
+        return original_association_score(selected, calibration, width, height)
+
+    selector._association_score = counted_association_score
+
+    selected = selector.select(
+        {
+            camera: (far[camera], wrong_scale[camera], boxer[camera])
+            for camera in CAMERA_ORDER
+        },
+        calibration,
+        640,
+        480,
+    )
+
+    assert len(association_calls) == 1
+    assert all(selected[camera] is boxer[camera] for camera in CAMERA_ORDER)
+
+
+def test_selector_requires_one_detection_from_every_camera_by_default() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+    )
+
+    selected = selector.select(
+        {"front": (boxer["front"],), "left": (), "right": (boxer["right"],)},
+        calibration,
+        640,
+        480,
+    )
+
+    assert all(selected[camera] is None for camera in CAMERA_ORDER)
+    assert selector.state == "ACQUIRING"
+
+
+def test_selector_requires_candidate_survive_pruning_in_every_camera() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+        maximum_temporal_center_jump=0.20,
+    )
+    selector.select(
+        {camera: (boxer[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+
+    selected = selector.select(
+        {
+            "front": (boxer["front"],),
+            "left": (boxer["left"],),
+            "right": (_detection(calibration, "right", 650.0),),
+        },
+        calibration,
+        640,
+        480,
+    )
+
+    assert all(selected[camera] is None for camera in CAMERA_ORDER)
+    assert selector.state == "LOST"
+
+
+def test_selector_still_allows_two_views_when_all_cameras_not_required() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+        require_all_cameras=False,
+    )
+
+    selected = selector.select(
+        {"front": (boxer["front"],), "left": (boxer["left"],), "right": ()},
+        calibration,
+        640,
+        480,
+    )
+
+    assert selected["front"] is boxer["front"]
+    assert selected["left"] is boxer["left"]
+    assert selected["right"] is None
+    assert selector.state == "LOCKED"
+
+
+def test_selector_rejects_cross_view_person_mix_by_reprojection() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    background_left = _detection(calibration, "left", 650.0)
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+    )
+
+    selected = selector.select(
+        {
+            "front": (boxer["front"],),
+            "left": (background_left,),
+            "right": (boxer["right"],),
+        },
+        calibration,
+        640,
+        480,
+    )
+
+    assert all(selected[camera] is None for camera in CAMERA_ORDER)
+    assert selector.state == "ACQUIRING"
+
+
+def test_locked_selector_rejects_consistent_background_triplet_then_recovers() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    background = {
+        camera: _detection(calibration, camera, 650.0) for camera in CAMERA_ORDER
+    }
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+        lost_timeout_frames=3,
+        maximum_temporal_center_jump=0.20,
+    )
+
+    acquired = selector.select(
+        {camera: (boxer[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+    assert all(acquired[camera] is boxer[camera] for camera in CAMERA_ORDER)
+
+    rejected = selector.select(
+        {camera: (background[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+    assert all(rejected[camera] is None for camera in CAMERA_ORDER)
+    assert selector.state == "LOST"
+    assert set(selector.previous_centers) == set(CAMERA_ORDER)
+
+    recovered = selector.select(
+        {camera: (boxer[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+    assert all(recovered[camera] is boxer[camera] for camera in CAMERA_ORDER)
+    assert selector.state == "LOCKED"
+
+
+def test_selector_never_mixes_background_side_view_into_locked_boxer() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    background_left = _detection(calibration, "left", 650.0)
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+        lost_timeout_frames=3,
+        maximum_temporal_center_jump=0.20,
+    )
+    selector.select(
+        {camera: (boxer[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+
+    selected = selector.select(
+        {
+            "front": (boxer["front"],),
+            "left": (background_left,),
+            "right": (boxer["right"],),
+        },
+        calibration,
+        640,
+        480,
+    )
+
+    assert all(selected[camera] is None for camera in CAMERA_ORDER)
+    assert selector.state == "LOST"
+
+
+def test_selector_forgets_target_only_after_configured_lost_timeout() -> None:
+    calibration = _calibration()
+    boxer = {camera: _detection(calibration, camera, 0.0) for camera in CAMERA_ORDER}
+    background = {
+        camera: _detection(calibration, camera, 650.0) for camera in CAMERA_ORDER
+    }
+    selector = CalibratedPoseSelector(
+        keypoint_confidence=0.35,
+        maximum_reprojection_error_px=20.0,
+        lost_timeout_frames=3,
+        maximum_temporal_center_jump=0.20,
+    )
+    selector.select(
+        {camera: (boxer[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+
+    for expected_state in ("LOST", "LOST", "ACQUIRING"):
+        rejected = selector.select(
+            {camera: (background[camera],) for camera in CAMERA_ORDER},
+            calibration,
+            640,
+            480,
+        )
+        assert all(rejected[camera] is None for camera in CAMERA_ORDER)
+        assert selector.state == expected_state
+
+    reacquired = selector.select(
+        {camera: (background[camera],) for camera in CAMERA_ORDER},
+        calibration,
+        640,
+        480,
+    )
+    assert all(
+        reacquired[camera] is background[camera] for camera in CAMERA_ORDER
+    )
+    assert selector.state == "LOCKED"
 
 
 def test_depth_mask_uses_pose_box_and_torso_depth_component() -> None:

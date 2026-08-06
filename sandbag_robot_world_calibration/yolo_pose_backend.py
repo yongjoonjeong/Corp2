@@ -359,20 +359,114 @@ class CalibratedPoseSelector:
         keypoint_confidence: float,
         maximum_reprojection_error_px: float = 40.0,
         lost_timeout_frames: int = 30,
+        require_all_cameras: bool = True,
+        candidate_top_k: int = 3,
+        maximum_temporal_center_jump: float = 0.25,
+        maximum_temporal_scale_log_change: float = 0.80,
     ) -> None:
         self.keypoint_confidence = float(keypoint_confidence)
         self.maximum_reprojection_error_px = float(maximum_reprojection_error_px)
         self.lost_timeout_frames = max(int(lost_timeout_frames), 1)
+        self.require_all_cameras = bool(require_all_cameras)
+        self.candidate_top_k = max(int(candidate_top_k), 1)
+        self.maximum_temporal_center_jump = max(
+            float(maximum_temporal_center_jump), 0.0
+        )
+        self.maximum_temporal_scale_log_change = max(
+            float(maximum_temporal_scale_log_change), 0.0
+        )
         self.previous_centers: dict[str, np.ndarray] = {}
+        self.previous_area_ratios: dict[str, float] = {}
         self.missing_frames = 0
         self.state = "ACQUIRING"
         self.last_score = float("inf")
 
     def reset(self) -> None:
         self.previous_centers.clear()
+        self.previous_area_ratios.clear()
         self.missing_frames = 0
         self.state = "ACQUIRING"
         self.last_score = float("inf")
+
+    @staticmethod
+    def _area_ratio(
+        detection: YoloPoseDetection,
+        width: int,
+        height: int,
+    ) -> float:
+        x1, y1, x2, y2 = detection.bbox_xyxy
+        return max((x2 - x1) * (y2 - y1), 1.0) / max(width * height, 1)
+
+    @staticmethod
+    def _candidate_tie_breaker(
+        detection: YoloPoseDetection,
+    ) -> tuple[float, ...]:
+        """Make top-K independent of the detector's candidate ordering."""
+        x1, y1, x2, y2 = detection.bbox_xyxy
+        return (
+            float(x1),
+            float(y1),
+            float(x2),
+            float(y2),
+            -float(detection.detection_confidence),
+        )
+
+    def _rank_and_prune_candidates(
+        self,
+        camera: str,
+        candidates: Sequence[YoloPoseDetection],
+        width: int,
+        height: int,
+    ) -> tuple[YoloPoseDetection, ...]:
+        """Apply cheap temporal gates before expensive multi-view geometry."""
+        ranked: list[tuple[tuple[float, ...], YoloPoseDetection]] = []
+        previous_center = self.previous_centers.get(camera)
+        previous_area = self.previous_area_ratios.get(camera)
+
+        for detection in candidates:
+            center = detection.center_normalized(width, height)
+            area = self._area_ratio(detection, width, height)
+            confidence_cost = 1.0 - float(detection.detection_confidence)
+
+            if previous_center is not None:
+                center_jump = float(np.linalg.norm(center - previous_center))
+                if center_jump > self.maximum_temporal_center_jump:
+                    continue
+                scale_change = 0.0
+                if previous_area is not None:
+                    scale_change = abs(
+                        float(
+                            np.log(
+                                max(area, 1e-6)
+                                / max(previous_area, 1e-6)
+                            )
+                        )
+                    )
+                    if scale_change > self.maximum_temporal_scale_log_change:
+                        continue
+                rank = (
+                    0.75 * center_jump
+                    + 0.15 * min(scale_change, 2.0)
+                    + 0.10 * confidence_cost
+                )
+            else:
+                center_cost = float(
+                    np.linalg.norm(center - np.asarray((0.5, 0.52)))
+                )
+                guard_cost = _guard_cost(detection) if camera == "front" else 0.0
+                rank = (
+                    0.70 * center_cost
+                    + 0.15 * guard_cost
+                    + 0.15 * confidence_cost
+                )
+
+            sort_key = (rank,) + self._candidate_tie_breaker(detection)
+            ranked.append((sort_key, detection))
+
+        ranked.sort(key=lambda item: item[0])
+        return tuple(
+            detection for _, detection in ranked[: self.candidate_top_k]
+        )
 
     def _association_score(
         self,
@@ -381,6 +475,32 @@ class CalibratedPoseSelector:
         width: int,
         height: int,
     ) -> float | None:
+        temporal_costs = []
+        for camera, detection in selected.items():
+            previous_center = self.previous_centers.get(camera)
+            current_center = detection.center_normalized(width, height)
+            if previous_center is not None:
+                center_jump = float(
+                    np.linalg.norm(current_center - previous_center)
+                )
+                if center_jump > self.maximum_temporal_center_jump:
+                    return None
+                temporal_costs.append(center_jump)
+
+            previous_area = self.previous_area_ratios.get(camera)
+            if previous_area is not None:
+                current_area = self._area_ratio(detection, width, height)
+                scale_change = abs(
+                    float(
+                        np.log(
+                            max(current_area, 1e-6)
+                            / max(previous_area, 1e-6)
+                        )
+                    )
+                )
+                if scale_change > self.maximum_temporal_scale_log_change:
+                    return None
+
         reprojection_errors: list[float] = []
         for name in LANDMARK_NAMES_3D:
             observations: dict[str, LandmarkObservation2D] = {}
@@ -413,17 +533,6 @@ class CalibratedPoseSelector:
                 front.center_normalized(width, height) - np.asarray((0.5, 0.52))
             )
         )
-        temporal_costs = []
-        for camera, detection in selected.items():
-            previous = self.previous_centers.get(camera)
-            if previous is not None:
-                temporal_costs.append(
-                    float(
-                        np.linalg.norm(
-                            detection.center_normalized(width, height) - previous
-                        )
-                    )
-                )
         temporal_cost = float(np.mean(temporal_costs)) if temporal_costs else 0.0
         view_penalty = 0.30 * (3 - len(selected))
         reprojection_cost = float(np.mean(reprojection_errors)) / max(
@@ -453,16 +562,45 @@ class CalibratedPoseSelector:
         if not candidates.get("front"):
             self._mark_missing()
             return empty
+        if self.require_all_cameras and any(
+            not candidates.get(camera) for camera in CAMERA_ORDER
+        ):
+            self._mark_missing()
+            return empty
+
+        pruned_candidates = {
+            camera: self._rank_and_prune_candidates(
+                camera,
+                candidates.get(camera, ()),
+                width,
+                height,
+            )
+            for camera in CAMERA_ORDER
+        }
+        if not pruned_candidates["front"]:
+            self._mark_missing()
+            return empty
+        if self.require_all_cameras and any(
+            not pruned_candidates[camera] for camera in CAMERA_ORDER
+        ):
+            self._mark_missing()
+            return empty
 
         combinations: list[dict[str, YoloPoseDetection]] = []
-        left_options: Sequence[YoloPoseDetection | None] = tuple(
-            candidates.get("left", ())
-        ) + (None,)
-        right_options: Sequence[YoloPoseDetection | None] = tuple(
-            candidates.get("right", ())
-        ) + (None,)
+        left_candidates = pruned_candidates["left"]
+        right_candidates = pruned_candidates["right"]
+        left_options: Sequence[YoloPoseDetection | None] = (
+            left_candidates
+            if self.require_all_cameras
+            else left_candidates + (None,)
+        )
+        right_options: Sequence[YoloPoseDetection | None] = (
+            right_candidates
+            if self.require_all_cameras
+            else right_candidates + (None,)
+        )
         for front, left, right in product(
-            candidates["front"], left_options, right_options
+            pruned_candidates["front"], left_options, right_options
         ):
             selected = {"front": front}
             if left is not None:
@@ -484,21 +622,18 @@ class CalibratedPoseSelector:
             return empty
         scored.sort(key=lambda item: item[0])
         score, best = scored[0]
-        if self.previous_centers:
-            front_jump = float(
-                np.linalg.norm(
-                    best["front"].center_normalized(width, height)
-                    - self.previous_centers["front"]
-                )
-            )
-            if front_jump > 0.45:
-                self._mark_missing()
-                return empty
-
-        self.previous_centers = {
+        updated_centers = dict(self.previous_centers)
+        updated_centers.update({
             camera: detection.center_normalized(width, height)
             for camera, detection in best.items()
-        }
+        })
+        self.previous_centers = updated_centers
+        updated_areas = dict(self.previous_area_ratios)
+        updated_areas.update({
+            camera: self._area_ratio(detection, width, height)
+            for camera, detection in best.items()
+        })
+        self.previous_area_ratios = updated_areas
         self.missing_frames = 0
         self.state = "LOCKED"
         self.last_score = float(score)

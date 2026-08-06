@@ -6,8 +6,8 @@
 detector:
   # Speed is only one start signal. A slow punch can start through the
   # accumulated displacement + elbow-extension condition below.
-  # Guard acquisition uses the front RealSense 2D MediaPipe pose. Punch motion
-  # after READY still uses the reconstructed three-camera 3D coordinates.
+  # Guard acquisition uses the selected front RealSense YOLO11-Pose skeleton.
+  # Punch motion after READY uses the matched three-camera 3D coordinates.
   guard_speed: 0.45
   guard_min_visibility: 0.30
   start_speed: 0.25
@@ -32,6 +32,11 @@ detector:
   min_confidence: 0.18
 
 classification:
+  # The guard frame fixes body orientation/scale for the complete punch. Only
+  # each frame's shoulder-centre translation is removed. Smooth reconstructed
+  # XYZ for phase selection; evidence images still use the original frame.
+  trajectory_smoothing_window: 3
+
   # Use the first near-peak outbound frame and ignore recovery to guard.
   impact_peak_fraction: 0.92
 
@@ -42,16 +47,38 @@ classification:
   straight_elbow_angle_min: 138.0
   straight_extension_gain_min: 8.0
 
-  # Hook: lateral component and 3D arc must both be present; arm remains bent.
+  # Hook fallback: lateral component and 3D arc; arm remains bent.
   hook_lateral_ratio_min: 0.42
   hook_curvature_min: 0.16
   hook_elbow_angle_max: 158.0
   hook_outward_travel_min: 0.12
   hook_inward_return_min: 0.08
 
-  # Uppercut: upward travel dominates lateral travel; arm remains bent.
+  # Primary Hook: full-event outside chamber -> inward contact in the fixed XZ
+  # body plane. These normalized thresholds intentionally start from the
+  # webcam 2D values that performed well.
+  hook_impact_peak_fraction: 0.92
+  hook_min_outward_chamber_ratio: 0.12
+  hook_min_ordered_inward_ratio: 0.35
+  hook_min_outward_steps: 2
+  hook_min_outward_consistency: 0.65
+  hook_min_inward_steps: 2
+  hook_min_inward_consistency: 0.60
+  hook_min_turn_angle_deg: 70.0
+  hook_horizontal_dominance: 1.10
+  hook_ordered_max_elbow_angle: 150.0
+  hook_max_extension_gain_deg: 25.0
+  hook_arc_contact_min_inward_ratio: 0.25
+
+  # Uppercut: ordered low chamber -> apex. Upward travel must dominate the XZ
+  # motion, and the fist must finish above its elbow.
+  uppercut_impact_peak_fraction: 0.95
+  uppercut_min_upward_ratio: 0.22
   uppercut_upward_ratio_min: 0.42
   uppercut_upward_travel_min: 0.18
+  uppercut_vertical_dominance: 1.05
+  uppercut_min_wrist_above_elbow_ratio: 0.03
+  uppercut_max_elbow_angle: 155.0
   uppercut_elbow_angle_max: 158.0
 
 feedback:

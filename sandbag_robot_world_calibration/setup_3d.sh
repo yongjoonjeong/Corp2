@@ -53,4 +53,6 @@ print(f"[OK] YOLO device: {'cuda:0' if torch.cuda.is_available() else 'cpu'}")
 print("[OK] pyrealsense2")
 PY
 
-echo "[DONE] Run: ./run_ros_3d_mvp.sh"
+echo "[DONE] 3D runtime dependencies are ready."
+echo "[NEXT] Standalone vision: ./run_ros_3d_mvp.sh"
+echo "[NEXT] Full UI integration: cd .. && ./run_integrated.sh"

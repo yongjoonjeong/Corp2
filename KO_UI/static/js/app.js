@@ -829,11 +829,16 @@ const VISION_FEEDBACK_TEXT = {
   guard_dropped: "반대 손 가드를 얼굴 가까이 올리세요.",
   torso_overlean: "상체가 너무 많이 기울어졌습니다.",
   wrist_height_off: "주먹 높이를 기준 자세에 맞추세요.",
+  straight_forward_path_off: "스트레이트를 목표 방향으로 더 직선적으로 뻗으세요.",
+  straight_path_not_linear: "손목이 좌우나 상하로 흔들리지 않게 직선 궤적을 유지하세요.",
   hook_elbow_angle_off: "훅의 팔꿈치 각도를 조정하세요.",
   hook_elbow_path_off: "훅 팔꿈치 궤적을 더 둥글게 유지하세요.",
+  hook_lateral_path_off: "주먹을 바깥쪽 챔버에서 안쪽으로 수평으로 휘두르세요.",
+  hook_curve_off: "훅의 방향 전환이 드러나도록 바깥쪽에서 안쪽으로 아크를 그리세요.",
   hook_wrist_elbow_misaligned: "훅에서 손목과 팔꿈치 높이를 맞추세요.",
   uppercut_elbow_angle_off: "어퍼컷 팔꿈치 각도를 조정하세요.",
   uppercut_wrist_path_off: "어퍼컷 손목을 위쪽으로 움직이세요.",
+  uppercut_upward_path_off: "아래쪽 챔버에서 시작해 주먹을 위쪽으로 올리세요.",
   uppercut_height_off: "어퍼컷 주먹 높이를 조정하세요.",
 };
 

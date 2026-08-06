@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -11,6 +12,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from app import KoServer, is_training_voice_command
+
+
+UI_ROOT = Path(__file__).resolve().parents[1]
+INTEGRATED_ROOT = UI_ROOT.parent
 
 
 class KoApiTest(unittest.TestCase):
@@ -194,7 +199,14 @@ class KoApiTest(unittest.TestCase):
         status, live = self.request(
             "/api/vision/status_update",
             "POST",
-            {"pose_detected": True, "centered": True, "detector_state": "READY"},
+            {
+                "pose_detected": True,
+                "centered": True,
+                "detector_state": "READY",
+                "target_locked": True,
+                "sync_spread_ms": 12.4,
+                "mean_reprojection_error_px": 3.2,
+            },
         )
         self.assertEqual(status, 200)
 
@@ -207,7 +219,17 @@ class KoApiTest(unittest.TestCase):
                 "punch_side": "right",
                 "total_score": 84.2,
                 "passed": True,
-                "violations": [],
+                "violations": [
+                    {
+                        "joint": "strike_wrist",
+                        "code": "straight_path_not_linear",
+                        "error_ratio": 1.1,
+                    }
+                ],
+                "impact_point": {
+                    "robot_base_mm": {"x": 412.0, "y": -85.0, "z": 920.0}
+                },
+                "quality": {"impact_sync_spread_ms": 12.4},
             },
         )
         self.assertEqual(status, 201)
@@ -217,10 +239,40 @@ class KoApiTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(vision_status["connected"])
         self.assertEqual(vision_status["live_status"]["detector_state"], "READY")
+        self.assertTrue(vision_status["live_status"]["target_locked"])
 
         status, events = self.request("/api/vision/events?after=0")
         self.assertEqual(status, 200)
         self.assertEqual(events["events"][-1]["type"], "punch")
+        punch_payload = events["events"][-1]["payload"]
+        self.assertEqual(
+            punch_payload["violations"][0]["code"],
+            "straight_path_not_linear",
+        )
+        self.assertEqual(
+            punch_payload["impact_point"]["robot_base_mm"]["x"],
+            412.0,
+        )
+
+        preview_bytes = b"\xff\xd8three-camera-preview\xff\xd9"
+        status, preview = self.request(
+            "/api/vision/preview",
+            "POST",
+            {
+                "format": "jpeg",
+                "frame_id": "front_realsense_color_optical_frame",
+                "data_base64": base64.b64encode(preview_bytes).decode("ascii"),
+            },
+        )
+        self.assertEqual(status, 201)
+        self.assertGreater(preview["version"], 0)
+        with urlopen(
+            f"http://127.0.0.1:{self.port}/api/vision/preview.jpg",
+            timeout=3,
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("image/jpeg", response.headers.get("Content-Type", ""))
+            self.assertEqual(response.read(), preview_bytes)
 
     def test_transcription_with_mocked_openai(self):
         class FakeOpenAIResponse:
@@ -294,6 +346,90 @@ class KoApiTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as ctx:
             self.request("/api/robot/command", "POST", {"command": "move_random"})
         self.assertEqual(ctx.exception.code, 400)
+
+
+class IntegratedYolo3DContractTest(unittest.TestCase):
+    def test_latest_3d_feedback_codes_have_korean_messages(self):
+        script = (UI_ROOT / "static/js/app.js").read_text(encoding="utf-8")
+        expected_codes = {
+            "straight_forward_path_off",
+            "straight_path_not_linear",
+            "hook_lateral_path_off",
+            "hook_curve_off",
+            "uppercut_upward_path_off",
+        }
+        for code in expected_codes:
+            with self.subTest(code=code):
+                self.assertIn(f"{code}:", script)
+
+    def test_training_ui_identifies_the_yolo_3d_coach(self):
+        template = (UI_ROOT / "templates/index.html").read_text(encoding="utf-8")
+        self.assertIn("YOLO 3D COACH", template)
+        self.assertIn("3개 카메라 3D 비전", template)
+        self.assertNotIn("MEDIA PIPE COACH", template)
+
+    def test_vision_bridge_subscribes_to_the_stable_ui_topics(self):
+        bridge = (
+            UI_ROOT
+            / "optional/vision_processing/body_tracking_mvp/ko_ui_bridge.py"
+        ).read_text(encoding="utf-8")
+        for topic in (
+            "/sandbag/form/score",
+            "/sandbag/form/status",
+            "/sandbag/form/joint_evidence/compressed",
+            "/sandbag/form/preview/compressed",
+        ):
+            with self.subTest(topic=topic):
+                self.assertIn(f'"{topic}"', bridge)
+
+    def test_optional_vision_runner_forwards_to_integrated_3d_runtime(self):
+        entrypoint = (UI_ROOT / "run_vision_optional.sh").read_text(
+            encoding="utf-8"
+        )
+        wrapper = (
+            UI_ROOT
+            / "optional/vision_processing/body_tracking_mvp/run_ros_mvp.sh"
+        ).read_text(encoding="utf-8")
+        orchestrator = (
+            UI_ROOT
+            / "optional/vision_processing/body_tracking_mvp/run_with_ko_ui.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("vision/run_ros_3d_mvp.sh", entrypoint)
+        self.assertNotIn("--ros-args", entrypoint)
+        self.assertNotIn("calibration_path", entrypoint)
+        self.assertIn('exec "$VISION_RUNNER" "$@"', wrapper)
+        self.assertNotIn("webcam_punch_feedback_node.py", wrapper)
+        self.assertNotIn("mediapipe", wrapper.lower())
+        self.assertIn('"$SCRIPT_DIR/run_ko_ui_bridge.sh" &', orchestrator)
+        self.assertIn('"$SCRIPT_DIR/run_ros_mvp.sh" "$@" &', orchestrator)
+        self.assertIn('wait -n "$BRIDGE_PID" "$VISION_PID"', orchestrator)
+        self.assertIn("KO UI vision bridge exited", orchestrator)
+        self.assertIn("Three-camera YOLO 3D runtime exited", orchestrator)
+
+    def test_integrated_runtime_pins_local_ui_and_bundled_vision(self):
+        launcher = (INTEGRATED_ROOT / "run_integrated.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('KO_UI_HOST="127.0.0.1"', launcher)
+        self.assertIn('KO_UI_PORT="5000"', launcher)
+        self.assertIn('export HOST="$KO_UI_HOST"', launcher)
+        self.assertIn('export PORT="$KO_UI_PORT"', launcher)
+        self.assertIn('export KO_UI_BASE_URL="$KO_UI_URL"', launcher)
+        self.assertIn('export KO_3D_VISION_RUNNER="$VISION_RUNNER"', launcher)
+        self.assertIn('-p calibration_path:="$CALIBRATION_FILE"', launcher)
+        self.assertIn('-p camera_role_map:="$CAMERA_ROLE_FILE"', launcher)
+
+    def test_integrated_setup_restores_scripts_and_preflights_ros_imports(self):
+        setup = (INTEGRATED_ROOT / "setup_integrated.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('chmod +x "${executable_scripts[@]}"', setup)
+        self.assertIn("/usr/bin/python3 - <<'PY'", setup)
+        self.assertIn('"$VISION_DIR/.venv/bin/python" - <<\'PY\'', setup)
+        for module in ("rclpy", "sensor_msgs.msg", "std_msgs.msg"):
+            with self.subTest(module=module):
+                self.assertIn(module, setup)
 
 
 if __name__ == "__main__":

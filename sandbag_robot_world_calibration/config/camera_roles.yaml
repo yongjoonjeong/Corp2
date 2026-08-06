@@ -1,10 +1,10 @@
 schema_version: 1
 c270_roles:
-  left: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:1.2:1.0-video-index0
-  right: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:3:1.0-video-index0
+  left: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:8:1.0-video-index0
+  right: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:7:1.0-video-index0
 resolved_at_assignment:
-  left: /dev/video2
-  right: /dev/video4
+  left: /dev/video4
+  right: /dev/video6
 usb_paths:
-  left: pci-0000:00:14.0-usb-0:1.2:1.0
-  right: pci-0000:00:14.0-usb-0:3:1.0
+  left: pci-0000:80:14.0-usb-0:8:1.0
+  right: pci-0000:80:14.0-usb-0:7:1.0

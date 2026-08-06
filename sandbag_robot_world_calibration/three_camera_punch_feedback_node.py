@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -76,8 +77,20 @@ class TimedFrame:
     stamp_s: float
 
 
+@dataclass(frozen=True)
+class RobotBaseMapBounds:
+    """Stable BASE-frame volume used by the local 3D renderer."""
+
+    x_min_mm: float
+    x_max_mm: float
+    y_min_mm: float
+    y_max_mm: float
+    z_min_mm: float
+    z_max_mm: float
+
+
 class LatestUsbCamera:
-    """Continuously keeps the freshest frame to reduce multi-camera skew."""
+    """Continuously buffers recent frames for monotonic-time synchronization."""
 
     def __init__(
         self,
@@ -85,6 +98,7 @@ class LatestUsbCamera:
         width: int,
         height: int,
         fps: float,
+        buffer_frames: int = 12,
     ) -> None:
         self.device = device
         source: str | int = int(device) if device.isdigit() else device
@@ -98,7 +112,9 @@ class LatestUsbCamera:
             raise RuntimeError(f"웹캠을 열 수 없습니다: {device}")
 
         self._lock = threading.Lock()
-        self._latest: TimedFrame | None = None
+        self._frames: deque[TimedFrame] = deque(
+            maxlen=max(int(buffer_frames), 2)
+        )
         self.read_success_count = 0
         self.read_failure_count = 0
         self._running = True
@@ -118,14 +134,26 @@ class LatestUsbCamera:
                 time.sleep(0.01)
                 continue
             with self._lock:
-                self._latest = TimedFrame(frame, stamp_s)
+                self._frames.append(TimedFrame(frame, stamp_s))
                 self.read_success_count += 1
 
     def latest(self) -> TimedFrame | None:
         with self._lock:
-            if self._latest is None:
+            if not self._frames:
                 return None
-            return TimedFrame(self._latest.image.copy(), self._latest.stamp_s)
+            latest = self._frames[-1]
+            return TimedFrame(latest.image.copy(), latest.stamp_s)
+
+    def nearest(self, stamp_s: float) -> TimedFrame | None:
+        """Return the buffered frame nearest to a monotonic reference stamp."""
+        with self._lock:
+            if not self._frames:
+                return None
+            nearest = min(
+                self._frames,
+                key=lambda item: abs(item.stamp_s - stamp_s),
+            )
+            return TimedFrame(nearest.image.copy(), nearest.stamp_s)
 
     def stats(self) -> tuple[int, int]:
         with self._lock:
@@ -267,6 +295,223 @@ def compose_three_camera_strip(
     return strip
 
 
+def rate_limit_due(last_run_s: float, now_s: float, frames_per_second: float) -> bool:
+    """Return whether a monotonic-time throttled task should run now."""
+    fps = float(frames_per_second)
+    if fps <= 0.0:
+        return False
+    if float(last_run_s) <= 0.0:
+        return True
+    return float(now_s) - float(last_run_s) >= (1.0 / fps) - 1e-9
+
+
+def retained_3d_sample_for_map(
+    sample: PoseSample3D | None,
+    last_valid_monotonic_s: float | None,
+    now_monotonic_s: float,
+    ttl_s: float,
+    *,
+    target_locked: bool,
+) -> PoseSample3D | None:
+    """Retain a brief 3D dropout, but never retain an unlocked target."""
+    if not target_locked or sample is None or last_valid_monotonic_s is None:
+        return None
+    age_s = max(float(now_monotonic_s) - float(last_valid_monotonic_s), 0.0)
+    return sample if age_s <= max(float(ttl_s), 0.0) + 1e-9 else None
+
+
+def center_within_gate(
+    center_xy: np.ndarray | tuple[float, float],
+    *,
+    target_x: float = 0.50,
+    target_y: float = 0.52,
+    tolerance_x: float = 0.22,
+    tolerance_y: float = 0.25,
+) -> bool:
+    """Check a normalized detection centre against the UI-ready region."""
+    center = np.asarray(center_xy, dtype=np.float64).reshape(-1)
+    if center.size != 2 or not np.all(np.isfinite(center)):
+        return False
+    return (
+        abs(float(center[0]) - float(target_x)) <= max(float(tolerance_x), 0.0)
+        and abs(float(center[1]) - float(target_y))
+        <= max(float(tolerance_y), 0.0)
+    )
+
+
+def alignment_status_flags(
+    *,
+    front_detection_present: bool,
+    sample_3d_valid: bool,
+    center_gate_passed: bool,
+) -> tuple[bool, bool]:
+    """Require a complete 3D sample before the UI can finish alignment."""
+    pose_detected = bool(front_detection_present and sample_3d_valid)
+    return pose_detected, bool(pose_detected and center_gate_passed)
+
+
+def append_bounded_trajectory(
+    history: deque[tuple[float, np.ndarray]],
+    stamp_s: float,
+    point_xyz_mm: np.ndarray | tuple[float, float, float],
+    *,
+    maximum_age_s: float,
+    maximum_points: int,
+) -> None:
+    """Append a finite point, then prune a trail by time and count."""
+    point = np.asarray(point_xyz_mm, dtype=np.float64).reshape(-1)
+    if point.size != 3 or not np.all(np.isfinite(point)):
+        return
+    now = float(stamp_s)
+    history.append((now, point.copy()))
+    cutoff = now - max(float(maximum_age_s), 0.0)
+    while history and history[0][0] < cutoff:
+        history.popleft()
+    limit = max(int(maximum_points), 1)
+    while len(history) > limit:
+        history.popleft()
+
+
+def trajectory_snapshot(
+    history: deque[tuple[float, np.ndarray]],
+    now_s: float,
+    *,
+    maximum_age_s: float,
+    maximum_points: int,
+) -> np.ndarray:
+    """Prune and copy the current bounded trajectory for rendering."""
+    cutoff = float(now_s) - max(float(maximum_age_s), 0.0)
+    while history and history[0][0] < cutoff:
+        history.popleft()
+    limit = max(int(maximum_points), 1)
+    while len(history) > limit:
+        history.popleft()
+    if not history:
+        return np.empty((0, 3), dtype=np.float64)
+    return np.asarray([point for _, point in history], dtype=np.float64).reshape(-1, 3)
+
+
+def sanitize_trajectory_points(
+    points_xyz_mm: np.ndarray | None,
+    maximum_points: int,
+) -> np.ndarray:
+    """Normalize an optional trail and retain only its latest finite points."""
+    if points_xyz_mm is None:
+        return np.empty((0, 3), dtype=np.float64)
+    points = np.asarray(points_xyz_mm, dtype=np.float64).reshape(-1, 3)
+    points = points[np.all(np.isfinite(points), axis=1)]
+    limit = max(int(maximum_points), 1)
+    return points[-limit:].copy()
+
+
+def compose_lightweight_preview(
+    camera_views: Mapping[str, np.ndarray],
+    total_width: int,
+    camera_height: int,
+    status_text: str,
+    *,
+    status_height: int = 42,
+) -> np.ndarray:
+    """Build the KO UI preview without the expensive BASE map or point cloud."""
+    width = max(int(total_width), 3)
+    view_height = max(int(camera_height), 1)
+    header_height = max(int(status_height), 28)
+    header = np.full((header_height, width, 3), 18, dtype=np.uint8)
+    cv2.putText(
+        header,
+        str(status_text),
+        (10, min(header_height - 10, 27)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (230, 240, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    strip = compose_three_camera_strip(camera_views, width, view_height)
+    return np.vstack((header, strip))
+
+
+def build_runtime_status_payload(
+    *,
+    pose_detected: bool,
+    centered: bool,
+    target_state: str,
+    detector_state: str,
+    telemetry: Mapping[str, Any],
+    sample_3d_valid: bool,
+    pose_detected_by_camera: Mapping[str, bool],
+    people_count_by_camera: Mapping[str, int],
+    sync_spread_ms: float,
+    left_sync_offset_ms: float,
+    right_sync_offset_ms: float,
+    reprojection_error_px: float,
+    depth_fused_joints: int,
+    missing_pose_frames: int,
+    sync_drop_count: int,
+) -> dict[str, Any]:
+    """Create the stable JSON contract consumed by the latest KO UI."""
+    return {
+        "mode": "three_camera_3d",
+        "pose_detected": bool(pose_detected),
+        "centered": bool(centered),
+        "target_locked": str(target_state) == "LOCKED",
+        "target_state": str(target_state),
+        "detector_state": str(detector_state),
+        "guard_frames": int(telemetry.get("guard_frames", 0)),
+        "ready_frames": int(telemetry.get("ready_frames", 0)),
+        "sample_3d_valid": bool(sample_3d_valid),
+        "pose_detected_by_camera": {
+            camera: bool(pose_detected_by_camera.get(camera, False))
+            for camera in CAMERA_DISPLAY_ORDER
+        },
+        "people_count_by_camera": {
+            camera: int(people_count_by_camera.get(camera, 0))
+            for camera in CAMERA_DISPLAY_ORDER
+        },
+        "sync_spread_ms": round(float(sync_spread_ms), 2),
+        "left_sync_offset_ms": round(float(left_sync_offset_ms), 2),
+        "right_sync_offset_ms": round(float(right_sync_offset_ms), 2),
+        "reprojection_error_px": round(float(reprojection_error_px), 3),
+        "depth_fused_joints": int(depth_fused_joints),
+        "missing_pose_frames": int(missing_pose_frames),
+        "sync_drop_count": int(sync_drop_count),
+    }
+
+
+def robot_base_map_bounds(calibration: Any) -> RobotBaseMapBounds:
+    """Return fixed bounds that include the robot, cameras, and punch workspace.
+
+    Dynamic people, trails, and point clouds intentionally do not affect these
+    bounds, so the renderer cannot breathe or jump as a punch moves.
+    """
+    camera_poses = [
+        calibration.camera_pose_in_base(name)
+        for name in CAMERA_DISPLAY_ORDER
+    ]
+    static_points = [np.zeros(3)]
+    for pose in camera_poses:
+        center = np.asarray(pose[:3, 3], dtype=np.float64)
+        static_points.extend((center, center + pose[:3, 2] * 350.0))
+    finite_points = np.asarray(static_points, dtype=np.float64)
+    finite_points = finite_points[np.all(np.isfinite(finite_points), axis=1)]
+    if not len(finite_points):
+        finite_points = np.zeros((1, 3), dtype=np.float64)
+
+    # M0609, the three-camera rig, and the expected standing punch volume.
+    workspace_x = (-2000.0, 2000.0)
+    workspace_y = (-2200.0, 1200.0)
+    workspace_z = (0.0, 2400.0)
+    calibration_padding_mm = 250.0
+    return RobotBaseMapBounds(
+        x_min_mm=min(workspace_x[0], float(np.min(finite_points[:, 0])) - calibration_padding_mm),
+        x_max_mm=max(workspace_x[1], float(np.max(finite_points[:, 0])) + calibration_padding_mm),
+        y_min_mm=min(workspace_y[0], float(np.min(finite_points[:, 1])) - calibration_padding_mm),
+        y_max_mm=max(workspace_y[1], float(np.max(finite_points[:, 1])) + calibration_padding_mm),
+        z_min_mm=min(workspace_z[0], float(np.min(finite_points[:, 2])) - calibration_padding_mm),
+        z_max_mm=max(workspace_z[1], float(np.max(finite_points[:, 2])) + calibration_padding_mm),
+    )
+
+
 def render_robot_base_3d_map(
     calibration: Any,
     sample: PoseSample3D | None,
@@ -274,6 +519,9 @@ def render_robot_base_3d_map(
     height: int,
     person_points_base_mm: np.ndarray | None = None,
     person_colors_bgr: np.ndarray | None = None,
+    wrist_trajectories_base_mm: Mapping[str, np.ndarray] | None = None,
+    trajectory_point_limit: int = 90,
+    view_bounds: RobotBaseMapBounds | None = None,
 ) -> np.ndarray:
     """Render an isometric BASE-frame map without an extra 3D dependency."""
     canvas = np.full((height, width, 3), 20, dtype=np.uint8)
@@ -296,11 +544,27 @@ def render_robot_base_3d_map(
     cloud_colors = np.asarray(person_colors_bgr, dtype=np.uint8).reshape(-1, 3) if person_colors_bgr is not None else np.empty((0, 3), dtype=np.uint8)
     if len(cloud_points) != len(cloud_colors):
         raise ValueError("Point-cloud positions and colors must have equal length")
-    points = [np.zeros(3), *(pose[:3, 3] for pose in camera_poses.values()), *skeleton.values(), *cloud_points[::max(len(cloud_points) // 1000, 1)]]
-    xy = np.asarray([point[:2] for point in points], dtype=np.float64)
-    center_xy = (xy.min(axis=0) + xy.max(axis=0)) * 0.5
-    span_xy = max(float(np.ptp(xy[:, 0])), float(np.ptp(xy[:, 1])), 1200.0)
-    z_max = max([float(point[2]) for point in points] + [1200.0])
+    wrist_trajectories = {
+        side: sanitize_trajectory_points(
+            (wrist_trajectories_base_mm or {}).get(side),
+            trajectory_point_limit,
+        )
+        for side in ("left", "right")
+    }
+    bounds = view_bounds or robot_base_map_bounds(calibration)
+    center_xy = np.asarray(
+        (
+            (bounds.x_min_mm + bounds.x_max_mm) * 0.5,
+            (bounds.y_min_mm + bounds.y_max_mm) * 0.5,
+        ),
+        dtype=np.float64,
+    )
+    span_xy = max(
+        bounds.x_max_mm - bounds.x_min_mm,
+        bounds.y_max_mm - bounds.y_min_mm,
+        1200.0,
+    )
+    span_z = max(bounds.z_max_mm - bounds.z_min_mm, 1200.0)
 
     azimuth = np.radians(-42.0)
     elevation = np.radians(28.0)
@@ -308,8 +572,14 @@ def render_robot_base_3d_map(
     screen_up = np.asarray(
         (-np.sin(elevation) * np.cos(azimuth), -np.sin(elevation) * np.sin(azimuth), np.cos(elevation))
     )
-    scale = min(width * 0.72 / span_xy, height * 0.62 / max(span_xy, z_max))
-    world_center = np.asarray((center_xy[0], center_xy[1], z_max * 0.35))
+    scale = min(width * 0.72 / span_xy, height * 0.62 / max(span_xy, span_z))
+    world_center = np.asarray(
+        (
+            center_xy[0],
+            center_xy[1],
+            bounds.z_min_mm + span_z * 0.35,
+        )
+    )
 
     def project(point: np.ndarray) -> tuple[int, int]:
         relative = np.asarray(point, dtype=np.float64).reshape(3) - world_center
@@ -319,11 +589,10 @@ def render_robot_base_3d_map(
         )
 
     grid_step = 500.0
-    grid_radius = max(1500.0, np.ceil(span_xy / grid_step) * grid_step)
-    x0 = np.floor((center_xy[0] - grid_radius) / grid_step) * grid_step
-    x1 = np.ceil((center_xy[0] + grid_radius) / grid_step) * grid_step
-    y0 = np.floor((center_xy[1] - grid_radius) / grid_step) * grid_step
-    y1 = np.ceil((center_xy[1] + grid_radius) / grid_step) * grid_step
+    x0 = np.floor(bounds.x_min_mm / grid_step) * grid_step
+    x1 = np.ceil(bounds.x_max_mm / grid_step) * grid_step
+    y0 = np.floor(bounds.y_min_mm / grid_step) * grid_step
+    y1 = np.ceil(bounds.y_max_mm / grid_step) * grid_step
     for x in np.arange(x0, x1 + 1.0, grid_step):
         cv2.line(canvas, project(np.asarray((x, y0, 0.0))), project(np.asarray((x, y1, 0.0))), (48, 48, 48), 1, cv2.LINE_AA)
     for y in np.arange(y0, y1 + 1.0, grid_step):
@@ -362,6 +631,40 @@ def render_robot_base_3d_map(
         visible_colors = cloud_colors[visible]
         for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
             canvas[pixel_y + dy, pixel_x + dx] = visible_colors
+
+    trajectory_colors = {
+        "left": (255, 180, 20),
+        "right": (40, 80, 255),
+    }
+    for side, trail in wrist_trajectories.items():
+        if not len(trail):
+            continue
+        pixels = np.asarray([project(point) for point in trail], dtype=np.int32)
+        if len(pixels) >= 2:
+            cv2.polylines(
+                canvas,
+                [pixels],
+                False,
+                (12, 12, 12),
+                8,
+                cv2.LINE_AA,
+            )
+            cv2.polylines(
+                canvas,
+                [pixels],
+                False,
+                trajectory_colors[side],
+                4,
+                cv2.LINE_AA,
+            )
+        cv2.circle(
+            canvas,
+            tuple(int(value) for value in pixels[-1]),
+            7,
+            trajectory_colors[side],
+            -1,
+            cv2.LINE_AA,
+        )
 
     if skeleton:
         torso_names = ("left_shoulder", "right_shoulder", "right_hip", "left_hip")
@@ -433,15 +736,20 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.declare_parameter("reference_path", str(default_reference))
         self.declare_parameter("capture_fps", 30.0)
         self.declare_parameter("processing_fps", 10.0)
-        self.declare_parameter("max_sync_spread_ms", 100.0)
+        self.declare_parameter("webcam_buffer_frames", 12)
+        self.declare_parameter("max_sync_spread_ms", 35.0)
         self.declare_parameter("pose_model", str(default_pose_model))
         self.declare_parameter("pose_device", "auto")
         self.declare_parameter("pose_image_size", 640)
         self.declare_parameter("pose_detection_confidence", 0.25)
         self.declare_parameter("pose_maximum_detections", 5)
+        self.declare_parameter("pose_association_candidate_top_k", 3)
         self.declare_parameter("min_landmark_visibility", 0.35)
         self.declare_parameter("pose_association_max_reprojection_px", 40.0)
         self.declare_parameter("pose_target_lost_timeout_frames", 30)
+        self.declare_parameter("pose_require_all_cameras", True)
+        self.declare_parameter("pose_temporal_max_center_jump", 0.25)
+        self.declare_parameter("pose_temporal_max_scale_log_change", 0.80)
         self.declare_parameter("max_reprojection_error_px", 10.0)
         self.declare_parameter("fist_max_reprojection_error_px", 25.0)
         self.declare_parameter("depth_fusion_weight", 0.35)
@@ -454,7 +762,10 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.declare_parameter("map_display", True)
         self.declare_parameter("map_width", 900)
         self.declare_parameter("map_height", 700)
+        self.declare_parameter("map_render_fps", 5.0)
+        self.declare_parameter("map_skeleton_ttl_s", 0.4)
         self.declare_parameter("person_point_cloud", True)
+        self.declare_parameter("point_cloud_update_fps", 2.5)
         self.declare_parameter("point_cloud_stride", 4)
         self.declare_parameter("segmentation_threshold", 0.55)
         self.declare_parameter("point_cloud_depth_band_mm", 350.0)
@@ -466,12 +777,27 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.declare_parameter("display_height", 360)
         self.declare_parameter("status_panel_height", 184)
         self.declare_parameter("jpeg_quality", 90)
+        self.declare_parameter("preview_publish_fps", 6.0)
+        self.declare_parameter("preview_width", 960)
+        self.declare_parameter("preview_camera_height", 240)
+        self.declare_parameter("preview_jpeg_quality", 72)
+        self.declare_parameter("status_publish_fps", 4.0)
+        self.declare_parameter("status_center_target_x", 0.50)
+        self.declare_parameter("status_center_target_y", 0.52)
+        self.declare_parameter("status_center_tolerance_x", 0.22)
+        self.declare_parameter("status_center_tolerance_y", 0.25)
+        self.declare_parameter("trajectory_trail_seconds", 1.5)
+        self.declare_parameter("trajectory_trail_max_points", 90)
         self.declare_parameter("feedback_image_dir", str(default_feedback_dir))
         self.declare_parameter("score_topic", "/sandbag/form/score")
         self.declare_parameter("fist_coordinate_topic", "/sandbag/fist_coordinates")
         self.declare_parameter(
             "image_topic", "/sandbag/form/joint_evidence/compressed"
         )
+        self.declare_parameter(
+            "preview_topic", "/sandbag/form/preview/compressed"
+        )
+        self.declare_parameter("status_topic", "/sandbag/form/status")
 
         requested_left_device = str(self.get_parameter("left_device").value)
         requested_right_device = str(self.get_parameter("right_device").value)
@@ -501,8 +827,11 @@ class ThreeCameraPunchFeedbackNode(Node):
         reference_path = Path(str(self.get_parameter("reference_path").value))
         self.capture_fps = float(self.get_parameter("capture_fps").value)
         self.processing_fps = float(self.get_parameter("processing_fps").value)
-        self.max_sync_spread_ms = float(
-            self.get_parameter("max_sync_spread_ms").value
+        self.webcam_buffer_frames = max(
+            int(self.get_parameter("webcam_buffer_frames").value), 2
+        )
+        self.max_sync_spread_ms = max(
+            float(self.get_parameter("max_sync_spread_ms").value), 0.0
         )
         self.pose_model = Path(str(self.get_parameter("pose_model").value)).expanduser()
         self.pose_device = str(self.get_parameter("pose_device").value)
@@ -515,6 +844,10 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.pose_maximum_detections = max(
             int(self.get_parameter("pose_maximum_detections").value), 1
         )
+        self.pose_association_candidate_top_k = max(
+            int(self.get_parameter("pose_association_candidate_top_k").value),
+            1,
+        )
         self.min_landmark_visibility = float(
             self.get_parameter("min_landmark_visibility").value
         )
@@ -523,6 +856,19 @@ class ThreeCameraPunchFeedbackNode(Node):
         )
         self.pose_target_lost_timeout_frames = max(
             int(self.get_parameter("pose_target_lost_timeout_frames").value), 1
+        )
+        self.pose_require_all_cameras = bool(
+            self.get_parameter("pose_require_all_cameras").value
+        )
+        self.pose_temporal_max_center_jump = max(
+            float(self.get_parameter("pose_temporal_max_center_jump").value),
+            0.0,
+        )
+        self.pose_temporal_max_scale_log_change = max(
+            float(
+                self.get_parameter("pose_temporal_max_scale_log_change").value
+            ),
+            0.0,
         )
         self.max_reprojection_error_px = float(
             self.get_parameter("max_reprojection_error_px").value
@@ -552,7 +898,16 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.map_display = bool(self.get_parameter("map_display").value)
         self.map_width = max(int(self.get_parameter("map_width").value), 640)
         self.map_height = max(int(self.get_parameter("map_height").value), 480)
+        self.map_render_fps = max(
+            float(self.get_parameter("map_render_fps").value), 0.0
+        )
+        self.map_skeleton_ttl_s = max(
+            float(self.get_parameter("map_skeleton_ttl_s").value), 0.0
+        )
         self.person_point_cloud = bool(self.get_parameter("person_point_cloud").value)
+        self.point_cloud_update_fps = max(
+            float(self.get_parameter("point_cloud_update_fps").value), 0.0
+        )
         self.point_cloud_stride = max(int(self.get_parameter("point_cloud_stride").value), 1)
         self.segmentation_threshold = float(self.get_parameter("segmentation_threshold").value)
         self.point_cloud_depth_band_mm = max(
@@ -572,6 +927,43 @@ class ThreeCameraPunchFeedbackNode(Node):
             int(self.get_parameter("status_panel_height").value), 180
         )
         self.jpeg_quality = int(self.get_parameter("jpeg_quality").value)
+        self.preview_publish_fps = max(
+            float(self.get_parameter("preview_publish_fps").value), 0.0
+        )
+        self.preview_width = max(
+            int(self.get_parameter("preview_width").value), 480
+        )
+        self.preview_camera_height = max(
+            int(self.get_parameter("preview_camera_height").value), 120
+        )
+        self.preview_jpeg_quality = int(
+            np.clip(
+                int(self.get_parameter("preview_jpeg_quality").value),
+                25,
+                95,
+            )
+        )
+        self.status_publish_fps = max(
+            float(self.get_parameter("status_publish_fps").value), 0.0
+        )
+        self.status_center_target_x = float(
+            self.get_parameter("status_center_target_x").value
+        )
+        self.status_center_target_y = float(
+            self.get_parameter("status_center_target_y").value
+        )
+        self.status_center_tolerance_x = max(
+            float(self.get_parameter("status_center_tolerance_x").value), 0.0
+        )
+        self.status_center_tolerance_y = max(
+            float(self.get_parameter("status_center_tolerance_y").value), 0.0
+        )
+        self.trajectory_trail_seconds = max(
+            float(self.get_parameter("trajectory_trail_seconds").value), 0.0
+        )
+        self.trajectory_trail_max_points = max(
+            int(self.get_parameter("trajectory_trail_max_points").value), 2
+        )
         self.feedback_image_dir = Path(
             str(self.get_parameter("feedback_image_dir").value)
         ).expanduser()
@@ -580,6 +972,8 @@ class ThreeCameraPunchFeedbackNode(Node):
             self.get_parameter("fist_coordinate_topic").value
         )
         image_topic = str(self.get_parameter("image_topic").value)
+        preview_topic = str(self.get_parameter("preview_topic").value)
+        status_topic = str(self.get_parameter("status_topic").value)
 
         self.calibration = load_three_camera_calibration(calibration_path)
         self.frame_width = self.calibration.image_width
@@ -611,6 +1005,12 @@ class ThreeCameraPunchFeedbackNode(Node):
             keypoint_confidence=self.min_landmark_visibility,
             maximum_reprojection_error_px=self.pose_association_max_reprojection_px,
             lost_timeout_frames=self.pose_target_lost_timeout_frames,
+            require_all_cameras=self.pose_require_all_cameras,
+            maximum_temporal_center_jump=self.pose_temporal_max_center_jump,
+            maximum_temporal_scale_log_change=(
+                self.pose_temporal_max_scale_log_change
+            ),
+            candidate_top_k=self.pose_association_candidate_top_k,
         )
 
         self.left_camera: LatestUsbCamera | None = None
@@ -622,12 +1022,14 @@ class ThreeCameraPunchFeedbackNode(Node):
                 self.frame_width,
                 self.frame_height,
                 self.capture_fps,
+                self.webcam_buffer_frames,
             )
             self.right_camera = LatestUsbCamera(
                 self.right_device,
                 self.frame_width,
                 self.frame_height,
                 self.capture_fps,
+                self.webcam_buffer_frames,
             )
             self.pipeline = self._start_realsense()
         except Exception:
@@ -637,12 +1039,22 @@ class ThreeCameraPunchFeedbackNode(Node):
 
         event_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         image_qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
+        preview_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
         self.score_publisher = self.create_publisher(String, score_topic, event_qos)
         self.fist_coordinate_publisher = self.create_publisher(
             String, fist_coordinate_topic, event_qos
         )
         self.image_publisher = self.create_publisher(
             CompressedImage, image_topic, image_qos
+        )
+        self.preview_publisher = self.create_publisher(
+            CompressedImage, preview_topic, preview_qos
+        )
+        self.status_publisher = self.create_publisher(
+            String, status_topic, event_qos
         )
 
         self.window_name = "Sandbag Punch Feedback 3D"
@@ -672,6 +1084,8 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.last_diagnostic_log_at = time.monotonic()
         self.camera_started_at = time.monotonic()
         self.last_sync_spread_ms = 0.0
+        self.last_left_sync_offset_ms = 0.0
+        self.last_right_sync_offset_ms = 0.0
         self.last_reprojection_rms_px = 0.0
         self.last_depth_fused_count = 0
         self.last_pose_detected = {
@@ -680,9 +1094,23 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.last_people_count = {camera: 0 for camera in CAMERA_DISPLAY_ORDER}
         self.last_3d_sample_valid = False
         self.latest_3d_sample: PoseSample3D | None = None
+        self.latest_3d_sample_monotonic_s: float | None = None
         self.last_3d_failure_reason = "waiting"
         self.last_result_display: dict[str, Any] | None = None
         self.impact_overlay: dict[str, Any] | None = None
+        self._last_preview_publish = 0.0
+        self._last_status_publish = 0.0
+        self._last_point_cloud_update = 0.0
+        self._last_map_render = 0.0
+        self._cached_person_points_base = np.empty((0, 3), dtype=np.float64)
+        self._cached_person_colors = np.empty((0, 3), dtype=np.uint8)
+        self._cached_map_frame: np.ndarray | None = None
+        self._wrist_trajectory_history: dict[
+            str, deque[tuple[float, np.ndarray]]
+        ] = {
+            side: deque(maxlen=self.trajectory_trail_max_points)
+            for side in ("left", "right")
+        }
         self.timer = self.create_timer(
             1.0 / max(self.processing_fps, 1.0), self.on_frame
         )
@@ -692,10 +1120,23 @@ class ThreeCameraPunchFeedbackNode(Node):
             f"calibration={calibration_path}"
         )
         self.get_logger().info(
+            "Frame synchronization: "
+            f"webcam_buffer={self.webcam_buffer_frames}, "
+            f"maximum_spread={self.max_sync_spread_ms:.1f}ms"
+        )
+        self.get_logger().info(
             "YOLO11n-Pose enabled: "
             f"model={self.pose_backend.model_path.name}, "
             f"device={self.pose_backend.device}, imgsz={self.pose_image_size}, "
             f"keypoint_conf={self.min_landmark_visibility:.2f}"
+        )
+        self.get_logger().info(
+            "Multi-view boxer lock: "
+            f"all_cameras={self.pose_require_all_cameras}, "
+            f"candidate_top_k={self.pose_association_candidate_top_k}, "
+            f"center_jump<={self.pose_temporal_max_center_jump:.2f}, "
+            f"scale_log_change<={self.pose_temporal_max_scale_log_change:.2f}, "
+            f"lost_timeout={self.pose_target_lost_timeout_frames} frames"
         )
         if self.pose_backend.device_fallback_reason is not None:
             self.get_logger().warning(
@@ -710,7 +1151,17 @@ class ThreeCameraPunchFeedbackNode(Node):
         elif use_role_map:
             self.get_logger().info(f"C270 roles loaded from {role_map_path}")
         self.get_logger().info(
-            f"Topics: {score_topic}, {fist_coordinate_topic}, {image_topic}"
+            "Topics: "
+            f"{score_topic}, {fist_coordinate_topic}, {image_topic}, "
+            f"{preview_topic}, {status_topic}"
+        )
+        self.get_logger().info(
+            "UI/render rates: "
+            f"preview={self.preview_publish_fps:.1f}Hz@{self.preview_width}px/"
+            f"JPEG{self.preview_jpeg_quality}, status={self.status_publish_fps:.1f}Hz, "
+            f"map={self.map_render_fps:.1f}Hz, "
+            f"cloud={self.point_cloud_update_fps:.1f}Hz, "
+            f"skeleton_ttl={self.map_skeleton_ttl_s:.2f}s"
         )
 
     def _start_realsense(self):
@@ -759,14 +1210,17 @@ class ThreeCameraPunchFeedbackNode(Node):
         except RuntimeError as error:
             self.get_logger().warning(f"RealSense frame read failed: {error}")
             return None
+        front_stamp_s = time.monotonic()
         aligned = self.align_to_color.process(frames)
         color_frame = aligned.get_color_frame()
         depth_frame = aligned.get_depth_frame()
         if not color_frame or not depth_frame:
             return None
-        front = TimedFrame(np.asanyarray(color_frame.get_data()).copy(), time.monotonic())
-        left = self.left_camera.latest()
-        right = self.right_camera.latest()
+        front = TimedFrame(
+            np.asanyarray(color_frame.get_data()).copy(), front_stamp_s
+        )
+        left = self.left_camera.nearest(front_stamp_s)
+        right = self.right_camera.nearest(front_stamp_s)
         if left is None or right is None:
             if time.monotonic() - self.camera_started_at >= self.camera_startup_timeout_s:
                 missing = []
@@ -782,6 +1236,12 @@ class ThreeCameraPunchFeedbackNode(Node):
                 )
             return None
         timed = {"left": left, "front": front, "right": right}
+        self.last_left_sync_offset_ms = (
+            left.stamp_s - front.stamp_s
+        ) * 1000.0
+        self.last_right_sync_offset_ms = (
+            right.stamp_s - front.stamp_s
+        ) * 1000.0
         stamps = [item.stamp_s for item in timed.values()]
         spread_ms = (max(stamps) - min(stamps)) * 1000.0
         self.last_sync_spread_ms = spread_ms
@@ -880,9 +1340,278 @@ class ThreeCameraPunchFeedbackNode(Node):
             depth_fused_count=depth_fused_count,
         )
 
+    def _front_detection_centered(
+        self,
+        detection: YoloPoseDetection | None,
+    ) -> bool:
+        if detection is None:
+            return False
+        return center_within_gate(
+            detection.center_normalized(self.frame_width, self.frame_height),
+            target_x=self.status_center_target_x,
+            target_y=self.status_center_target_y,
+            tolerance_x=self.status_center_tolerance_x,
+            tolerance_y=self.status_center_tolerance_y,
+        )
+
+    def publish_status(
+        self,
+        front_detection: YoloPoseDetection | None,
+        *,
+        now_monotonic: float | None = None,
+    ) -> None:
+        now_s = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        if not rate_limit_due(
+            self._last_status_publish,
+            now_s,
+            self.status_publish_fps,
+        ):
+            return
+        pose_detected, centered = alignment_status_flags(
+            front_detection_present=front_detection is not None,
+            sample_3d_valid=self.last_3d_sample_valid,
+            center_gate_passed=self._front_detection_centered(front_detection),
+        )
+        payload = build_runtime_status_payload(
+            pose_detected=pose_detected,
+            centered=centered,
+            target_state=self.pose_selector.state,
+            detector_state=self.detector.state,
+            telemetry=self.detector.telemetry,
+            sample_3d_valid=self.last_3d_sample_valid,
+            pose_detected_by_camera=self.last_pose_detected,
+            people_count_by_camera=self.last_people_count,
+            sync_spread_ms=self.last_sync_spread_ms,
+            left_sync_offset_ms=self.last_left_sync_offset_ms,
+            right_sync_offset_ms=self.last_right_sync_offset_ms,
+            reprojection_error_px=self.last_reprojection_rms_px,
+            depth_fused_joints=self.last_depth_fused_count,
+            missing_pose_frames=self.missing_pose_frames,
+            sync_drop_count=self.sync_drop_count,
+        )
+        now = self.get_clock().now().to_msg()
+        payload["stamp_ns"] = int(now.sec) * 1_000_000_000 + int(now.nanosec)
+        message = String()
+        message.data = json.dumps(payload, ensure_ascii=False)
+        self.status_publisher.publish(message)
+        self._last_status_publish = now_s
+
+    def _preview_status_text(self) -> str:
+        sample_label = "OK" if self.last_3d_sample_valid else "MISS"
+        return (
+            f"STATE {self.detector.state} | TARGET {self.pose_selector.state} | "
+            f"3D {sample_label} | SYNC {self.last_sync_spread_ms:.0f}ms | "
+            f"REPROJ {self.last_reprojection_rms_px:.1f}px"
+        )
+
+    def publish_preview(
+        self,
+        camera_views: Mapping[str, np.ndarray],
+        *,
+        now_monotonic: float | None = None,
+    ) -> None:
+        now_s = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        if not rate_limit_due(
+            self._last_preview_publish,
+            now_s,
+            self.preview_publish_fps,
+        ):
+            return
+        preview = compose_lightweight_preview(
+            camera_views,
+            self.preview_width,
+            self.preview_camera_height,
+            self._preview_status_text(),
+        )
+        encoded, jpeg = cv2.imencode(
+            ".jpg",
+            preview,
+            [cv2.IMWRITE_JPEG_QUALITY, self.preview_jpeg_quality],
+        )
+        if not encoded:
+            return
+        message = CompressedImage()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = "three_camera_pose_strip"
+        message.format = "jpeg"
+        message.data = jpeg.tobytes()
+        self.preview_publisher.publish(message)
+        self._last_preview_publish = now_s
+
+    def _build_camera_views(
+        self,
+        timed_frames: Mapping[str, TimedFrame],
+        pose_detections: Mapping[str, YoloPoseDetection | None],
+        front_pose: Any | None,
+    ) -> dict[str, np.ndarray]:
+        display_samples = {"front": front_pose}
+        for camera in ("left", "right"):
+            detection = pose_detections[camera]
+            display_samples[camera] = (
+                detection.to_pose_sample(
+                    timed_frames[camera].stamp_s,
+                    timed_frames[camera].image,
+                )
+                if detection is not None
+                else None
+            )
+        camera_views: dict[str, np.ndarray] = {}
+        for camera in CAMERA_DISPLAY_ORDER:
+            camera_view = (
+                cv2.flip(timed_frames[camera].image, 1)
+                if self.mirror_display
+                else timed_frames[camera].image.copy()
+            )
+            pose_sample = display_samples[camera]
+            if pose_sample is not None:
+                draw_pose(camera_view, pose_sample, self.mirror_display)
+            camera_views[camera] = camera_view
+        self.draw_cooldown_effect(camera_views["front"])
+        return camera_views
+
+    def _map_output_enabled(self) -> bool:
+        return bool(self.display and self.map_display)
+
+    def _clear_latest_3d_sample(self) -> None:
+        had_sample = self.latest_3d_sample is not None
+        self.latest_3d_sample = None
+        self.latest_3d_sample_monotonic_s = None
+        if had_sample:
+            self._last_map_render = 0.0
+
+    def _clear_target_rendering(self) -> None:
+        had_target_rendering = (
+            self.latest_3d_sample is not None
+            or bool(len(self._cached_person_points_base))
+            or any(self._wrist_trajectory_history.values())
+        )
+        self.latest_3d_sample = None
+        self.latest_3d_sample_monotonic_s = None
+        self._cached_person_points_base = np.empty((0, 3), dtype=np.float64)
+        self._cached_person_colors = np.empty((0, 3), dtype=np.uint8)
+        for history in self._wrist_trajectory_history.values():
+            history.clear()
+        if had_target_rendering:
+            self._last_map_render = 0.0
+
+    def _retained_map_sample(self, now_s: float) -> PoseSample3D | None:
+        if self.pose_selector.state != "LOCKED":
+            self._clear_target_rendering()
+            return None
+        retained = retained_3d_sample_for_map(
+            self.latest_3d_sample,
+            self.latest_3d_sample_monotonic_s,
+            now_s,
+            self.map_skeleton_ttl_s,
+            target_locked=True,
+        )
+        if retained is None:
+            self._clear_latest_3d_sample()
+        return retained
+
+    def _update_wrist_trajectories(self, sample: PoseSample3D | None) -> None:
+        if (
+            not self._map_output_enabled()
+            or sample is None
+            or self.calibration.T_base_front_mm is None
+        ):
+            return
+        for side in ("left", "right"):
+            point_front = sample.landmarks[f"{side}_wrist"].xyz
+            point_base = self.calibration.front_point_to_base(point_front)
+            append_bounded_trajectory(
+                self._wrist_trajectory_history[side],
+                sample.stamp_s,
+                point_base,
+                maximum_age_s=self.trajectory_trail_seconds,
+                maximum_points=self.trajectory_trail_max_points,
+            )
+
+    def _trajectory_snapshots(self, now_s: float) -> dict[str, np.ndarray]:
+        return {
+            side: trajectory_snapshot(
+                self._wrist_trajectory_history[side],
+                now_s,
+                maximum_age_s=self.trajectory_trail_seconds,
+                maximum_points=self.trajectory_trail_max_points,
+            )
+            for side in ("left", "right")
+        }
+
+    def _update_point_cloud_cache(
+        self,
+        timed_frames: Mapping[str, TimedFrame],
+        depth_frame: Any,
+        front_detection: YoloPoseDetection | None,
+        now_s: float,
+    ) -> None:
+        if (
+            not self._map_output_enabled()
+            or not self.person_point_cloud
+            or self.calibration.T_base_front_mm is None
+            or not rate_limit_due(
+                self._last_point_cloud_update,
+                now_s,
+                self.point_cloud_update_fps,
+            )
+        ):
+            return
+        depth_raw = np.asanyarray(depth_frame.get_data())
+        person_mask = depth_mask_from_pose_box(
+            depth_raw,
+            front_detection,
+            self.depth_scale_m,
+            minimum_keypoint_confidence=self.min_landmark_visibility,
+            depth_band_mm=self.point_cloud_depth_band_mm,
+            bbox_margin_ratio=self.point_cloud_bbox_margin,
+        )
+        (
+            self._cached_person_points_base,
+            self._cached_person_colors,
+        ) = colored_person_point_cloud_base(
+            timed_frames["front"].image,
+            depth_raw,
+            person_mask,
+            self.color_intrinsics,
+            self.depth_scale_m,
+            self.calibration.T_base_front_mm,
+            stride=self.point_cloud_stride,
+            segmentation_threshold=self.segmentation_threshold,
+            minimum_depth_mm=self.point_cloud_minimum_depth_mm,
+            maximum_depth_mm=self.point_cloud_maximum_depth_mm,
+        )
+        self._last_point_cloud_update = now_s
+
+    def _update_map_cache(self, now_s: float) -> None:
+        map_sample = self._retained_map_sample(now_s)
+        if (
+            not self._map_output_enabled()
+            or not rate_limit_due(
+                self._last_map_render,
+                now_s,
+                self.map_render_fps,
+            )
+        ):
+            return
+        self._cached_map_frame = render_robot_base_3d_map(
+            self.calibration,
+            map_sample,
+            self.map_width,
+            self.map_height,
+            self._cached_person_points_base,
+            self._cached_person_colors,
+            self._trajectory_snapshots(now_s),
+            self.trajectory_trail_max_points,
+        )
+        self._last_map_render = now_s
+
     def on_frame(self) -> None:
         captured = self._get_frames()
         if captured is None:
+            now_s = time.monotonic()
+            self.last_3d_sample_valid = False
+            self._update_map_cache(now_s)
+            self.publish_status(None, now_monotonic=now_s)
             self.log_runtime_diagnostics()
             return
         self.synced_triplet_count += 1
@@ -902,33 +1631,6 @@ class ThreeCameraPunchFeedbackNode(Node):
         self.last_people_count = {
             camera: len(pose_candidates[camera]) for camera in CAMERA_DISPLAY_ORDER
         }
-        depth_raw = np.asanyarray(depth_frame.get_data())
-        person_points_base = np.empty((0, 3), dtype=np.float64)
-        person_colors = np.empty((0, 3), dtype=np.uint8)
-        if (
-            self.person_point_cloud
-            and self.calibration.T_base_front_mm is not None
-        ):
-            person_mask = depth_mask_from_pose_box(
-                depth_raw,
-                pose_detections["front"],
-                self.depth_scale_m,
-                minimum_keypoint_confidence=self.min_landmark_visibility,
-                depth_band_mm=self.point_cloud_depth_band_mm,
-                bbox_margin_ratio=self.point_cloud_bbox_margin,
-            )
-            person_points_base, person_colors = colored_person_point_cloud_base(
-                timed_frames["front"].image,
-                depth_raw,
-                person_mask,
-                self.color_intrinsics,
-                self.depth_scale_m,
-                self.calibration.T_base_front_mm,
-                stride=self.point_cloud_stride,
-                segmentation_threshold=self.segmentation_threshold,
-                minimum_depth_mm=self.point_cloud_minimum_depth_mm,
-                maximum_depth_mm=self.point_cloud_maximum_depth_mm,
-            )
         self.last_pose_detected = {
             camera: pose_detections[camera] is not None
             for camera in CAMERA_DISPLAY_ORDER
@@ -950,9 +1652,12 @@ class ThreeCameraPunchFeedbackNode(Node):
             pose_detections,
             front_pose,
         )
+        now_s = time.monotonic()
         self.last_3d_sample_valid = sample is not None
         if sample is not None:
             self.latest_3d_sample = sample
+            self.latest_3d_sample_monotonic_s = now_s
+            self._update_wrist_trajectories(sample)
         if sample is None:
             self.missing_pose_frames += 1
             if self.missing_pose_frames >= self.missing_pose_reset_frames:
@@ -964,47 +1669,43 @@ class ThreeCameraPunchFeedbackNode(Node):
             if event is not None:
                 self.handle_punch(event)
 
-        if self.display:
-            display_samples = {"front": front_pose}
-            for camera in ("left", "right"):
-                detection = pose_detections[camera]
-                display_samples[camera] = (
-                    detection.to_pose_sample(
-                        timed_frames[camera].stamp_s,
-                        timed_frames[camera].image,
-                    )
-                    if detection is not None
-                    else None
-                )
-            camera_views: dict[str, np.ndarray] = {}
-            for camera in CAMERA_DISPLAY_ORDER:
-                camera_view = (
-                    cv2.flip(timed_frames[camera].image, 1)
-                    if self.mirror_display
-                    else timed_frames[camera].image.copy()
-                )
-                pose_sample = display_samples[camera]
-                if pose_sample is not None:
-                    draw_pose(camera_view, pose_sample, self.mirror_display)
-                camera_views[camera] = camera_view
-            self.draw_cooldown_effect(camera_views["front"])
+        self._update_point_cloud_cache(
+            timed_frames,
+            depth_frame,
+            pose_detections["front"],
+            now_s,
+        )
+        self._update_map_cache(now_s)
+        self.publish_status(
+            pose_detections["front"],
+            now_monotonic=now_s,
+        )
+
+        preview_due = rate_limit_due(
+            self._last_preview_publish,
+            now_s,
+            self.preview_publish_fps,
+        )
+        camera_views: dict[str, np.ndarray] | None = None
+        if self.display or preview_due:
+            camera_views = self._build_camera_views(
+                timed_frames,
+                pose_detections,
+                front_pose,
+            )
+        if preview_due and camera_views is not None:
+            self.publish_preview(camera_views, now_monotonic=now_s)
+
+        if self.display and camera_views is not None:
             cv2.imshow(self.window_name, self.build_display_frame(camera_views))
-            if self.map_display:
-                cv2.imshow(
-                    self.map_window_name,
-                    render_robot_base_3d_map(
-                        self.calibration,
-                        self.latest_3d_sample if sample is not None else None,
-                        self.map_width,
-                        self.map_height,
-                        person_points_base,
-                        person_colors,
-                    ),
-                )
+            if self.map_display and self._cached_map_frame is not None:
+                cv2.imshow(self.map_window_name, self._cached_map_frame)
             pressed_key = cv2.waitKey(1) & 0xFF
             if pressed_key in (ord("r"), ord("R")):
                 self.pose_selector.reset()
                 self.detector.reset()
+                self._clear_target_rendering()
+                self._cached_map_frame = None
                 self.get_logger().info("YOLO boxer target lock reset by user")
             elif pressed_key in (ord("q"), 27):
                 rclpy.shutdown()
@@ -1109,7 +1810,9 @@ class ThreeCameraPunchFeedbackNode(Node):
             f"missing_streak={self.missing_pose_frames} "
             f"sync_drops={self.sync_drop_count} "
             f"state={self.detector.state} "
-            f"sync={self.last_sync_spread_ms:.1f}ms "
+            f"sync={self.last_sync_spread_ms:.1f}ms"
+            f"(L{self.last_left_sync_offset_ms:+.1f}/"
+            f"R{self.last_right_sync_offset_ms:+.1f}) "
             f"reproj={self.last_reprojection_rms_px:.1f}px "
             f"depth={self.last_depth_fused_count}/9 "
             f"yolo=L{int(self.last_pose_detected['left'])}"
@@ -1284,7 +1987,9 @@ class ThreeCameraPunchFeedbackNode(Node):
         cv2.putText(
             frame,
             (
-                f"SYNC {self.last_sync_spread_ms:.0f} ms | "
+                f"SYNC {self.last_sync_spread_ms:.0f} ms "
+                f"(L{self.last_left_sync_offset_ms:+.0f}/"
+                f"R{self.last_right_sync_offset_ms:+.0f}) | "
                 f"REPROJ {self.last_reprojection_rms_px:.1f} px | "
                 f"DEPTH {self.last_depth_fused_count}/9 | DROPS {self.sync_drop_count}"
             ),
@@ -1507,13 +2212,37 @@ class ThreeCameraPunchFeedbackNode(Node):
             "image_saved": image_saved,
         }
         motion = classified.motion_features
+        selected_impact = motion.get(
+            "selected_impact_sample_index",
+            motion.get("impact_sample_index", 0.0),
+        )
+        generic_impact = motion.get(
+            "generic_impact_sample_index", selected_impact
+        )
+        hook_out = motion.get(
+            "hook_outward_excursion_ratio",
+            motion.get("hook_outward_travel_ratio", 0.0),
+        )
+        hook_in = motion.get(
+            "hook_inward_sweep_ratio",
+            motion.get("hook_inward_return_ratio", 0.0),
+        )
+        hook_turn = motion.get("hook_turn_angle_deg", 0.0)
+        hook_extension = motion.get(
+            "hook_extension_gain_deg",
+            motion.get("extension_gain_deg", 0.0),
+        )
         self.get_logger().info(
             f"#{self.punch_id} {classified.side} {classified.punch_type} "
             f"score={result.total_score:.1f} image={image_published} "
             f"saved={image_saved} forward={motion['forward_component_ratio']:.2f} "
             f"lateral={motion['lateral_component_ratio']:.2f} "
             f"up={motion['upward_component_ratio']:.2f} "
-            f"curve={motion['path_curvature_ratio']:.2f}"
+            f"curve={motion['path_curvature_ratio']:.2f} "
+            f"hook_out={hook_out:.2f} hook_in={hook_in:.2f} "
+            f"turn={hook_turn:.1f}deg ext={hook_extension:.1f}deg "
+            f"impact={selected_impact:.0f}/{generic_impact:.0f} "
+            f"sync={classified.key_sample.sync_spread_ms:.1f}ms"
         )
 
     def save_feedback_image(

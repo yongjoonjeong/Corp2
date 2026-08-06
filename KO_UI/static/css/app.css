@@ -969,7 +969,7 @@ main { padding: 0 clamp(20px, 4vw, 64px) 54px; }
   .dock-toggle { grid-column: 1 / -1; width: 100%; }
 }
 
-/* MediaPipe ROS 2 vision integration */
+/* YOLO three-camera ROS 2 vision integration */
 .vision-preview {
   position: absolute;
   inset: 0;

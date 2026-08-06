@@ -46,20 +46,22 @@ config/mitt.yaml                    punching TCP 및 미트 법선축 설정
 
 ## ChArUco 규격
 
-현재 기본값은 이전 대화 기준입니다.
+이 통합본에 포함된 최종 캘리브레이션에서 실제 사용한 보드 규격입니다.
+아래 값은 `config/board.yaml` 및 각 intrinsic 결과와 반드시 함께 유지합니다.
 
 ```yaml
 dictionary: DICT_4X4_50
 squares_x: 11
 squares_y: 8
-square_length_mm: 24.0
-marker_length_mm: 15.0
+square_length_mm: 34.0
+marker_length_mm: 20.0
+legacy_pattern: true
 ```
 
 - `11×8 squares`는 내부 ChArUco 코너 `10×7`에 해당합니다.
-- `square_length_mm=24.0`은 실제 한 칸 크기입니다.
+- `square_length_mm=34.0`은 실제 한 칸 크기입니다.
 - `marker_length_mm`와 dictionary는 **실제 출력한 보드와 정확히 일치해야 합니다.**
-- OpenCV 4.6 이전 방식으로 만든 짝수 행 ChArUco 출력물이라면 `legacy_pattern: true`가 필요할 수 있습니다. 새로 출력한 보드는 기본 `false`를 사용합니다.
+- 이 결과는 짝수 행 legacy ChArUco 패턴으로 계산했으므로 `legacy_pattern: true`를 바꾸면 안 됩니다.
 - 종이는 평평한 아크릴·MDF·알루미늄 판 등에 부착합니다.
 
 ## 카메라 장치 분류
