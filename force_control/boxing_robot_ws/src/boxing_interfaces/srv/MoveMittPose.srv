@@ -1,0 +1,17 @@
+float64 x_mm
+float64 y_mm
+float64 z_mm
+
+float64 rx_deg
+float64 ry_deg
+float64 rz_deg
+
+float64 velocity
+float64 acceleration
+
+# Zero keeps the mitt positioner's normal angular motion profile.
+float64 angular_velocity
+float64 angular_acceleration
+---
+bool success
+string message

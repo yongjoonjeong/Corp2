@@ -1,0 +1,6 @@
+float64 person_height_mm
+float64 arm_length_mm
+string punch_type
+---
+bool success
+string message

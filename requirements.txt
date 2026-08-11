@@ -1,0 +1,11 @@
+# PyTorch / torchvision are intentionally NOT pinned here.
+# setup.sh selects CPU or CUDA automatically and installs/reuses the correct pair first.
+numpy>=1.23,<2.0
+PyYAML>=6.0
+scipy>=1.9
+opencv-python>=4.8,<4.12
+mediapipe==0.10.21
+ultralytics>=8.3,<9.0
+lap>=0.5.12
+pyrealsense2>=2.55
+pytest>=7,<9

@@ -1,0 +1,13 @@
+std_msgs/Header header
+string side
+geometry_msgs/Point position_base_mm
+geometry_msgs/Vector3 velocity_base_mm_s
+float32 position_std_mm
+float32 measurement_age_ms
+float32 reprojection_error_px
+float32 confidence
+uint8 camera_count
+uint8 camera_mask
+float32 minimum_ray_angle_deg
+bool depth_used
+bool valid

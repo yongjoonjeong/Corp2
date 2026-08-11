@@ -1,0 +1,7 @@
+schema_version: 1
+# Stable physical USB-port mapping from the target KO rig.
+# If either path does not exist after moving USB ports/computers, run:
+#   python3 tools/assign_cameras.py
+c270_roles:
+  left: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:4:1.0-video-index0
+  right: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:5:1.0-video-index0

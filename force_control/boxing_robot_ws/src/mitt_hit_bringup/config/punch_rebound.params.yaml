@@ -1,0 +1,106 @@
+# Continuous punch-rebound profile.
+# Load after hit_analyzer.params.yaml and compliance_session_base.params.yaml.
+# This profile temporarily lowers collision sensitivity during a hit session.
+hit_analyzer:
+  ros__parameters:
+    # target_hit_count=0 means run continuously until /mitt/stop_test.
+    allow_continuous_session: true
+
+    # This impact profile was validated only in NORMAL mode. REDUCED retains
+    # separate lower certified limits, so refuse Start outside NORMAL.
+    require_normal_speed_mode: true
+
+    # The safety operator's normal-mode setting is 40%. Short punch torque at
+    # that value triggered Axis 1 collision detection. Use one less-sensitive
+    # step only while training, then restore 40% on every exit path.
+    collision_sensitivity_override_enabled: true
+    training_collision_sensitivity_percent: 30
+    normal_collision_sensitivity_percent: 40
+    collision_sensitivity_service_timeout_sec: 0.20
+
+    # Compliance remains enabled for the whole session at the fixed verified
+    # stiffness. Do not call set_stiffnessx at contact or return: the measured
+    # service serialization created a visible move-pause-move retreat. The
+    # explicit asynchronous MoveLine provides a force-scaled rebound.
+    compliance_stiffness: [15000.0, 15000.0, 5000.0, 800.0, 800.0, 800.0]
+    # Visible commanded rebound. The first >=10 N contact sample immediately
+    # starts one asynchronous linear retreat while compliance stays active.
+    # Body 7 and the physical mitt's punching_shape must remain active. The
+    # The approved 100 mm Tool-Z path must remain clear before every session.
+    commanded_rebound_enabled: true
+    rebound_minimum_distance_mm: 20.0
+    rebound_maximum_distance_mm: 100.0
+    rebound_force_for_maximum_distance_n: 80.0
+    # The measured contact-to-amovel software latency is about 1 ms. The former
+    # The retreat was validated at 80 mm/s and 1500 mm/s^2, then raised one
+    # bounded step for a quicker visible response.
+    # Return stays slower than retreat for a smooth reset.
+    rebound_retreat_velocity_mm_s: 100.0
+    rebound_retreat_acceleration_mm_s2: 2000.0
+    rebound_return_velocity_mm_s: 60.0
+    rebound_return_acceleration_mm_s2: 200.0
+    rebound_target_tolerance_mm: 0.75
+    rebound_motion_timeout_sec: 5.0
+    # Hook/uppercut pose changes can include a 55-degree task rotation.
+    # Keep the active-session motion guard open until that bounded move ends.
+    intentional_motion_timeout_sec: 12.0
+    rebound_service_timeout_sec: 1.0
+    rebound_stop_state_moving_grace_sec: 0.50
+    # Tool +Z is the outward mitt-face normal for every prepared pose. Retreat
+    # along Tool -Z therefore follows a straight/hook punch backward and sends
+    # the downward-facing uppercut mitt upward in BASE.
+    rebound_tool_z_direction_sign: -1
+    rebound_rehit_enabled: true
+    # Return-direction inertia reached 17-44 N near the 50 mm endpoint and was
+    # mistaken for a new punch. Arm re-hit only after 5 mm of actual return.
+    rebound_rehit_arm_return_progress_mm: 5.0
+
+    # Keep the softer-stiffness transition bounded independently from punches.
+    maximum_activation_tcp_displacement_mm: 5.0
+    maximum_activation_total_force_n: 35.0
+    maximum_activation_total_torque_nm: 30.0
+
+    # At the current mitt pose, Kz=500 N/m produced compliant micro-motion that
+    # repeatedly reset the inherited 0.10 mm/s stabilization window. The
+    # earlier no-contact characterization passed at 0.50 mm/s. Keep a complete
+    # three-second untouched window, while allowing the measured controller
+    # transition transient (24.96 N / 3.88 Nm) below explicit activation caps.
+    compliance_stabilization_velocity_tolerance_mm_s: 0.50
+    compliance_stabilization_angular_velocity_tolerance_deg_s: 0.10
+    compliance_stabilization_timeout_ms: 20000.0
+    maximum_zero_moment_stddev_nm: 0.15
+
+    # These session limits become active only after post-activation settling
+    # and reference recapture. They are application watchdogs, not certified
+    # substitutes for Doosan controller safety functions.
+    # Leave 10 mm of application-watchdog margin beyond the commanded stroke.
+    # Controller self-collision monitoring remains authoritative and unchanged.
+    maximum_tcp_displacement_mm: 110.0
+    maximum_tcp_angular_displacement_deg: 2.0
+    # Application watchdog requested by the safety operator. The certified TP
+    # force limit remains independent and may stop the robot before this value.
+    maximum_total_force_n: 150.0
+    # Calibration and punch transients are bounded by this application
+    # watchdog. Certified controller safety limits remain independent.
+    maximum_total_torque_nm: 30.0
+
+    # Detect actual punch contacts from the fixed post-activation baseline.
+    start_force_n: 10.0
+    end_force_n: 5.0
+    stable_force_n: 3.0
+    minimum_position_force_n: 8.0
+    preview_force_warning_n: 60.0
+
+    # Accept another punch only after the internal compliance spring has
+    # returned close to its captured reference and remained settled.
+    # Latest real return settled at 1.23~1.25 mm with zero contact force.
+    return_position_tolerance_mm: 1.5
+    return_velocity_tolerance_mm_s: 5.0
+    return_force_tolerance_n: 3.0
+    return_settle_time_ms: 300.0
+    return_timeout_ms: 8000.0
+
+    # One isolated >100 ms ROS/DDS delivery gap was observed while the RT
+    # publisher and robot controller remained healthy. This stays fail-closed,
+    # but no longer treats ordinary scheduler jitter as a robot safety event.
+    rt_sample_timeout_ms: 250.0

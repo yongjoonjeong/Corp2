@@ -1,0 +1,7 @@
+tcp_name: punching
+tcp_offset_mm_deg: [0, 0, 55, 0, 0, 0]
+# 타격면 바깥쪽 법선이 TCP의 어느 축인지 실물 저속 검증 후 부호를 확정하세요.
+surface_normal_axis: "+Z"
+# 법선축 주위 Roll을 안정화할 때 미트의 위쪽으로 사용할 TCP 로컬 축입니다.
+local_up_axis: "+Y"
+base_up_axis: [0, 0, 1]

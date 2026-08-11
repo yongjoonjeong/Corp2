@@ -1,0 +1,6 @@
+uint32 target_hit_count
+bool auto_recover
+bool suppress_commanded_rebound
+---
+bool success
+string message

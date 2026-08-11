@@ -376,8 +376,9 @@ KO/
 ├── calibration/                  # 최종 Robot-world / Intrinsic 결과
 ├── calibration_tools/            # Camera ↔ Robot BASE Calibration 도구
 ├── config/                       # Vision / Camera / Mitt 설정
-├── docs/
-│   └── images/                   # README 시스템·실행·플로우 이미지
+├── docs/                        # 배포·통합·테스트 문서 및 README 이미지
+│   ├── images/                   # 시스템·실행·플로우 이미지
+│   └── archive/                  # 개발 과정 참고 문서
 ├── force_control/
 │   └── boxing_robot_ws/
 │       └── src/

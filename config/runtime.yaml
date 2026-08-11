@@ -1,0 +1,165 @@
+schema_version: 1
+
+calibration:
+  robot_world: ../calibration/results/robot_world.yaml
+
+camera:
+  width: 640
+  height: 480
+  fps: 30
+  ring_buffer_s: 2.0
+  # Add measured per-camera capture bias here; positive means treat it as later.
+  time_offset_ms:
+    left: 0.0
+    front: 0.0
+    right: 0.0
+  realsense_serial: ""
+  left_device: auto
+  right_device: auto
+  role_map: camera_roles.yaml
+  swap_webcams: false
+
+target:
+  # YOLO+BoT-SORT decides identity only. MediaPipe provides all joint points.
+  model: ../models/yolo11n.pt
+  tracker: botsort.yaml
+  # RTX 5080 CUDA. YOLO measured ~10.7 ms on GPU vs ~25.1 ms on CPU.
+  device: "0"
+  detector_hz: 10.0
+  torch_threads: 2
+  imgsz: 416
+  confidence: 0.30
+  bbox_margin_ratio: 0.18
+  side_roi_half_width_px: 280
+  side_roi_half_height_px: 360
+  # Side-camera BoT-SORT prioritizes the box nearest the front-selected torso.
+  side_alignment_max_distance_px: 180.0
+  lost_hold_s: 1.0
+  reacquire_distance_mm: 500.0
+  depth_radius_px: 5
+  depth_min_mm: 500.0
+  depth_max_mm: 4000.0
+
+  # Robot BASE training volume. Tighten this after installing the cameras.
+  workspace_base_mm:
+    x: [-900.0, 900.0]
+    y: [-1800.0, 300.0]
+    z: [-200.0, 2200.0]
+
+pose:
+  model: ../models/pose_landmarker_lite.task
+  # Keep MediaPipe on CPU/XNNPACK. Its Linux GPU delegate uses llvmpipe on
+  # this rig and measured ~136 ms vs ~12 ms on CPU.
+  # Camera frames are already upright at capture time. Keep inference unrotated;
+  # points remain in the same pixel coordinates used during calibration.
+  # The admin preview uses the same upright orientation below.
+  rotations:
+    left: none
+    front: none
+    right: none
+  minimum_detection_confidence: 0.35
+  minimum_presence_confidence: 0.35
+  minimum_tracking_confidence: 0.35
+  minimum_landmark_confidence: 0.30
+  maximum_result_age_ms: 100.0
+  # Training preparation completes from the FRONT MediaPipe result only.
+  front_ready_minimum_landmark_confidence: 0.50
+  front_ready_maximum_result_age_ms: 250.0
+
+triangulation:
+  minimum_cameras: 2
+  maximum_time_skew_ms: 45.0
+  maximum_interpolation_gap_ms: 80.0
+  maximum_reprojection_error_px: 12.0
+  minimum_ray_angle_deg: 6.0
+  depth_fusion_weight: 0.20
+  maximum_depth_disagreement_mm: 180.0
+  hand_extension_mm: 85.0
+
+filter:
+  process_acceleration_std_mm_s2: 6500.0
+  initial_position_std_mm: 80.0
+  initial_velocity_std_mm_s: 1800.0
+  maximum_measurement_age_ms: 100.0
+  maximum_innovation_sigma: 5.0
+
+impact:
+  # Front RealSense 2D detector. Speeds are shoulder-widths per second.
+  minimum_landmark_confidence: 0.35
+  guard_max_wrist_nose_ratio: 1.85
+  guard_max_speed_body_s: 0.45
+  guard_ready_frames: 4
+  start_speed_body_s: 0.90
+  start_displacement_body: 0.10
+  start_extension_gain_deg: 7.0
+  start_confirm_frames: 2
+  minimum_duration_s: 0.10
+  maximum_duration_s: 1.40
+  minimum_contact_displacement_body: 0.20
+  minimum_contact_extension_gain_deg: 12.0
+  minimum_contact_displacement_without_extension_body: 0.35
+  minimum_peak_speed_body_s: 1.00
+  deceleration_ratio: 0.58
+  reversal_cosine: 0.10
+  contact_settle_frames: 2
+  # Keep the confirmed state visible briefly before entering COOLDOWN.
+  impact_display_s: 0.22
+  cooldown_s: 0.70
+  max_lost_frames: 6
+  # Approximate fist center = wrist + ratio * (wrist - elbow).
+  fist_extension_forearm_ratio: 0.35
+  # Fail closed: an impact is valid only when the estimated fist center reaches
+  # this normalized FRONT-camera zone. This is also the initial tracker search area.
+  require_mitt_roi: true
+  mitt_roi_normalized: [0.68, 0.68, 0.93, 0.90]
+  mitt_roi_max_time_skew_ms: 80.0
+  mitt_tracking:
+    enabled: true
+    low_hue_max: 10
+    high_hue_min: 170
+    saturation_min: 150
+    value_min: 80
+    minimum_area_px: 1200
+    maximum_area_px: 20000
+    padding_px: 6
+    maximum_center_jump_px: 120
+    # A fast robot motion may move the pad farther than one-frame local tracking.
+    # Expand around the last good position, then scan the full frame after 3 misses.
+    reacquire_jump_growth: 1.0
+    maximum_reacquire_jump_px: 520
+    global_reacquire_after_misses: 3
+    minimum_fill_ratio: 0.40
+    area_similarity_weight: 60
+    smoothing_alpha: 0.80
+    velocity_alpha: 0.50
+    lost_hold_frames: 2
+
+snapshot:
+  output_directory: output/impacts
+  jpeg_quality: 92
+  candidate_offsets_ms: [-34.0, 0.0, 34.0]
+
+ros:
+  fist_state_topic: /sandbag/fist_state
+  impact_event_topic: /sandbag/impact_event
+  impact_image_topic: /sandbag/impact_feedback_image/compressed
+  preview_image_topic: /sandbag/vision/preview/compressed
+  front_preview_image_topic: /sandbag/vision/front/compressed
+  status_topic: /sandbag/vision/status
+  status_publish_hz: 10.0
+  publish_hz: 30.0
+  publish_preview: true
+  preview_publish_hz: 8.0
+  preview_jpeg_quality: 82
+  # Admin triptych display orientation is independent from pose inference.
+  preview_rotations:
+    left: none
+    front: none
+    right: none
+  # Clean front RealSense stream shared with browser-side reach measurement.
+  publish_front_preview: true
+  front_preview_publish_hz: 10.0
+  front_preview_jpeg_quality: 82
+  # Web UI already displays the ROS preview; do not open a duplicate OpenCV window.
+  show_preview: false
+  show_fist_overlay: true

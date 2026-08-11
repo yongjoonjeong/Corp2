@@ -1,0 +1,72 @@
+robot:
+  robot_id: "dsr01"
+  robot_model: "m0609"
+  host: "192.168.1.100"
+  port: 12345
+  reference_frame: "base"
+
+  # Registration state is recorded separately from the real-motion safety gate.
+  tcp_registered: true
+  tcp_configured: true
+  tcp_verified: true
+  tool_weight_registered: true
+  tool_shape_configured: true
+  tool_configured: true
+  tool_verified: false
+  allow_real_motion: false
+
+  tcp:
+    name: "punching"
+    # Teach Pendant value, in [X, Y, Z, A, B, C] (mm, deg).
+    pose_mm_deg: [0.0, 0.0, 55.0, 0.0, 0.0, 0.0]
+
+  tool:
+    name: "punching_weight"
+    mass_kg: 0.480
+    # Current Teach Pendant auto-measurement value in flange coordinates.
+    # Do not overwrite this controller-measured value from application code.
+    center_of_gravity_mm: [18.740, -70.600, -123.310]
+    shape:
+      name: "punching_shape"
+      type: "cuboid"
+      # Tool-coordinate points (mm): X=150, Y=190, Z=50, centered at X=Y=0.
+      point_1_mm: [-75.0, -95.0, -50.0]
+      point_2_mm: [75.0, 95.0, 0.0]
+
+  mitt:
+    width_mm: 190.0
+    height_mm: 150.0
+    thickness_mm: 50.0
+    centered_on_flange_axis: true
+
+  mounting:
+    mitt_parallel_to_flange: true
+    # Verified by data/calibration_runs/axis_check_01 (2026-08-04).
+    normal_axis: "z"
+    normal_sign: -1
+    normal_axis_verified: true
+    # frame_check_01 confirmed that the installed Doosan ROS2 callback rotates
+    # force into TOOL for ref=1 but reports moments in BASE/WORLD.
+    driver_mixed_wrench_frame_detected: true
+    moment_reported_frame: "base"
+    mixed_wrench_correction_implemented: true
+    # Verified by data/calibration_runs/frame_corrected_check_01 (2026-08-04).
+    mixed_wrench_correction_verified: true
+    moment_mapping_verified: true
+    rt_external_tcp_force_verified: true
+    rt_position_sign_x: 1.0
+    rt_position_sign_y: 1.0
+
+  doosan_services:
+    get_tool_force: "/dsr01/aux_control/get_tool_force"
+    get_current_posx: "/dsr01/aux_control/get_current_posx"
+    task_compliance_ctrl: "/dsr01/force/task_compliance_ctrl"
+    release_compliance_ctrl: "/dsr01/force/release_compliance_ctrl"
+    move_line: "/dsr01/motion/move_line"
+
+  motion:
+    initial_joint_deg: [-180.0, 0.0, 90.0, 90.0, 90.0, 0.0]
+    default_velocity: 20.0
+    default_acceleration: 20.0
+    recovery_velocity: 10.0
+    recovery_acceleration: 10.0

@@ -1,0 +1,40 @@
+mitt_positioner:
+  ros__parameters:
+    # False publishes/calculates targets but never calls Doosan motion services.
+    allow_real_motion: true
+    # Enable hook/uppercut MoveL targets at the low task speeds configured below.
+    nonstraight_pose_verified: true
+    service_timeout_sec: 2.0
+
+    initial_joint_deg: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0]
+    # Authoritative mitt-ready posture from the final TP photograph.
+    # The boxer positions themself in front of this fixed mitt pose.
+    reference_joint_deg: [-90.0, 60.0, 30.0, -90.0, -90.0, 0.0]
+    joint_velocity_deg_s: 20.0
+    joint_acceleration_deg_s2: 20.0
+
+    # Body offsets are measured from the final photographed posture. The
+    # current reference profile is 1730 mm tall with a 666 mm right reach.
+    reference_person_height_mm: 1730.0
+    reference_person_arm_length_mm: 666.0
+    arm_extension_ratio: 1.0
+    hook_arm_extension_ratio: 0.70
+    uppercut_arm_extension_ratio: 0.55
+    shoulder_height_ratio: 0.818
+    uppercut_height_ratio: 0.72
+    hook_face_angle_deg: 55.0
+
+    task_velocity_mm_s: 20.0
+    task_angular_velocity_deg_s: 10.0
+    task_acceleration_mm_s2: 20.0
+    task_angular_acceleration_deg_s2: 20.0
+    # Doosan Jog uses percent of the configured task jog speed. Jog has no
+    # software distance endpoint and is stopped by the 8 N reach contact gate.
+    reach_jog_speed_percent: 1.0
+
+    move_joint_service: "/dsr01/motion/move_joint"
+    move_line_service: "/dsr01/motion/move_line"
+    move_stop_service: "/dsr01/motion/move_stop"
+    jog_service: "/dsr01/motion/jog"
+    fkin_service: "/dsr01/motion/fkin"
+    get_current_posx_service: "/dsr01/aux_control/get_current_posx"

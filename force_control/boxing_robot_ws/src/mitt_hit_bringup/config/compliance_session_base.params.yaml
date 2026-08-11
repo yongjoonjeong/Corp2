@@ -1,0 +1,45 @@
+# Verified compliance lifecycle base shared by the punch-rebound profile.
+# The tighter activation limits apply only until post-activation stabilization.
+# This does not change TP Tool/TCP/CoG or controller safety settings.
+hit_analyzer:
+  ros__parameters:
+    compliance_enabled: true
+    compliance_stiffness_verified: true
+    # Anisotropic no-contact setting. Tool X/Y resist the measured lateral
+    # residual force; Tool Z remains the softer intended punch-normal axis.
+    compliance_stiffness: [15000.0, 15000.0, 5000.0, 500.0, 500.0, 500.0]
+    compliance_reference_id: 1
+    compliance_activation_time_sec: 1.0
+
+    # The default-stiffness run reached 1.002 mm and was safely released.
+    # Keep the same 1.0 mm boundary while testing the anisotropic stiffness.
+    # These limits are diagnostic, not punch limits.
+    maximum_tcp_displacement_mm: 1.0
+    # Physical orientation difference from the captured reference, computed
+    # from the full ZYZ rotation rather than raw Euler component subtraction.
+    maximum_tcp_angular_displacement_deg: 0.30
+    maximum_activation_tcp_displacement_mm: 1.0
+    maximum_activation_tcp_angular_displacement_deg: 0.30
+    maximum_total_force_n: 10.0
+    maximum_total_torque_nm: 3.0
+    maximum_activation_total_force_n: 10.0
+    maximum_activation_total_torque_nm: 3.0
+
+    # Prior stable trace: 0.0075 mm/s and 0.00075 deg/s maximum.
+    # Prior abnormal transition: 6.32 mm/s and 0.768 deg/s maximum.
+    compliance_stabilization_velocity_tolerance_mm_s: 0.10
+    compliance_stabilization_angular_velocity_tolerance_deg_s: 0.05
+    # 10 s timed out with a final stable window at 675/751 samples; 15 s
+    # completed safely while every displacement/wrench watchdog stayed active.
+    compliance_stabilization_timeout_ms: 15000.0
+
+    # Past no-contact moment noise reached about 0.083 Nm stddev.
+    maximum_zero_moment_stddev_nm: 0.10
+
+    # Required to construct the return monitor. No contact is permitted in
+    # this test, so these are not approved post-punch return limits.
+    return_position_tolerance_mm: 0.20
+    return_velocity_tolerance_mm_s: 0.50
+    return_force_tolerance_n: 0.50
+    return_settle_time_ms: 500.0
+    return_timeout_ms: 2000.0

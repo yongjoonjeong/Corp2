@@ -1,0 +1,80 @@
+hit_analyzer:
+  ros__parameters:
+    input_topic: "/mitt/rt_sample"
+    output_topic: "/mitt/hit_result"
+    expected_frame_id: "mitt_tool_corrected"
+
+    calibration_duration_ms: 500.0
+    minimum_calibration_samples: 20
+    maximum_zero_force_stddev_n: 0.5
+    maximum_zero_moment_stddev_nm: 0.05
+
+    normal_sign: -1
+    # RT external_tcp_force moment signs were verified on the real mitt.
+    sign_x: 1.0
+    sign_y: 1.0
+    start_force_n: 10.0
+    end_force_n: 5.0
+    stable_force_n: 3.0
+    minimum_hit_duration_ms: 10.0
+    maximum_hit_duration_ms: 300.0
+    end_stable_time_ms: 20.0
+    debounce_ms: 150.0
+
+    minimum_position_force_n: 8.0
+    minimum_position_samples: 2
+    perfect_radius_mm: 20.0
+    direction_deadband_mm: 10.0
+    mitt_width_mm: 190.0
+    mitt_height_mm: 150.0
+
+    # Preview warning only; it does not command or certify a robot safety stop.
+    preview_force_warning_n: 30.0
+
+    scoring_valid_radius_mm: 100.0
+    record_dir: "data/hit_records"
+    save_contact_samples: true
+    allow_continuous_session: false
+
+    # Compliance is enabled once at Start and remains active across every hit
+    # and compliant return until the session terminates. It remains fail-closed
+    # here until the residual no-contact wrench is resolved and the operational
+    # limits are verified.
+    compliance_enabled: false
+    compliance_stiffness_verified: false
+    compliance_stiffness: []
+    compliance_reference_id: 1
+    compliance_activation_time_sec: 0.5
+    compliance_service_timeout_sec: 0.2
+    # Intentionally unset. Set a separately approved positive limit before
+    # enabling compliance; zero makes activation fail closed.
+    maximum_tcp_displacement_mm: 0.0
+    maximum_tcp_angular_displacement_deg: 0.0
+    maximum_activation_tcp_displacement_mm: 0.0
+    maximum_activation_tcp_angular_displacement_deg: 0.0
+    # Absolute RT watchdogs include the no-contact residual wrench. Keep unset
+    # until measured/approved; hit detection itself uses the recaptured delta.
+    maximum_total_force_n: 0.0
+    maximum_total_torque_nm: 0.0
+    maximum_activation_total_force_n: 0.0
+    maximum_activation_total_torque_nm: 0.0
+    release_max_attempts: 3
+    release_retry_interval_sec: 0.05
+    # Post-activation TCP/wrench baseline capture is fail-closed until these
+    # stationary velocity tolerances are measured and configured.
+    compliance_stabilization_velocity_tolerance_mm_s: 0.0
+    compliance_stabilization_angular_velocity_tolerance_deg_s: 0.0
+    # Overall deadline, including the complete post-activation wrench baseline.
+    compliance_stabilization_timeout_ms: 0.0
+    # Intentionally unset until static compliance return testing verifies them.
+    return_position_tolerance_mm: 0.0
+    return_velocity_tolerance_mm_s: 0.0
+    return_force_tolerance_n: 0.0
+    return_settle_time_ms: 100.0
+    return_timeout_ms: 2000.0
+    rt_sample_timeout_ms: 100.0
+    require_normal_speed_mode: false
+    compliance_service: "/dsr01/force/task_compliance_ctrl"
+    release_compliance_service: "/dsr01/force/release_compliance_ctrl"
+    rt_service: "/dsr01/realtime/read_data_rt"
+    speed_mode_service: "/dsr01/system/get_robot_speed_mode"

@@ -1,5 +1,0 @@
-# Ubuntu 22.04 / Python 3.10 권장
-numpy==1.26.4
-scipy>=1.10,<2
-PyAudio>=0.2.14
-openwakeword==0.6.0

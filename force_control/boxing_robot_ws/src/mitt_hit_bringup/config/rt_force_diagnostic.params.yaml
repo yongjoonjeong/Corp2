@@ -1,0 +1,9 @@
+rt_force_diagnostic:
+  ros__parameters:
+    service_name: "/dsr01/realtime/read_data_rt"
+    poll_period_ms: 2.0
+    request_timeout_ms: 100.0
+    corrected_topic: "/mitt/wrench_rt_corrected"
+    # Verified with center/right/left/up/down presses on the mounted mitt.
+    corrected_frame_id: "mitt_tool_corrected"
+    rt_sample_topic: "/mitt/rt_sample"

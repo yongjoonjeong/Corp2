@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>boxing_integration</name>
+  <version>0.1.0</version>
+  <description>Session bridge between the KO UI, vision runtime, and mitt hit system.</description>
+  <maintainer email="rokey@todo.local">rokey</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>boxing_interfaces</depend>
+  <depend>mitt_hit_system</depend>
+  <test_depend>ament_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

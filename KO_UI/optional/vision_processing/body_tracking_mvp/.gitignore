@@ -1,8 +1,0 @@
-.venv/
-.vscode/
-__pycache__/
-*.py[cod]
-feedback_images/*.jpg
-feedback_images/*.jpeg
-feedback_images/*.png
-*.zip
